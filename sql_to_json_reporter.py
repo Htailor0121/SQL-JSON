@@ -11,7 +11,7 @@ from ollama import Client
 load_dotenv()
 
 # Database Configuration
-DB_TYPE = "mysql"  # Changed to mssql for T-SQL
+DB_TYPE = "mysql"  
 DB_USER = "root"
 DB_PASSWORD = "Har@0121"
 DB_HOST = "localhost"
