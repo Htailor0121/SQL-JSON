@@ -6,7 +6,7 @@ const DEFAULTS = {
   db_type: 'mysql',
   host: 'localhost',
   port: 3306,
-  user: 'root',
+  user: '',
   password: '',
   database: '',
 };
