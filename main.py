@@ -9,18 +9,18 @@ from sql_to_json_reporter import QueryConverter
 
 app = FastAPI()
 
-# Allow CORS for deployed Vercel frontends
+# TEMP: Allow CORS from all origins for debugging
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://sql-json-kappa.vercel.app",
-        "https://sql-json-git-main-harshs-projects-faeabbc2.vercel.app",
-        "https://sql-json-2ttv7bch5-harshs-projects-faeabbc2.vercel.app"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}
 
 class DBConfig(BaseModel):
     db_type: str
@@ -69,21 +69,25 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.post("/schema")
 async def schema_endpoint(request: SchemaRequest):
-    db_config = {
-        'host': request.db_config.host,
-        'port': request.db_config.port,
-        'user': request.db_config.user,
-        'password': request.db_config.password,
-        'database': request.db_config.database
-    }
-    converter = QueryConverter(request.db_config.db_type, db_config)
     try:
+        db_config = {
+            'host': request.db_config.host,
+            'port': request.db_config.port,
+            'user': request.db_config.user,
+            'password': request.db_config.password,
+            'database': request.db_config.database
+        }
+        converter = QueryConverter(request.db_config.db_type, db_config)
         schema = converter.get_schema()
         return schema
     except Exception as e:
+        print("SCHEMA ERROR:", e)
         return {"error": str(e)}
     finally:
-        converter.close()
+        try:
+            converter.close()
+        except Exception:
+            pass
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
