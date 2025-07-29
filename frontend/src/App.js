@@ -2,11 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
+const API_URL = "https://sql-json.onrender.com";
+
 const DEFAULTS = {
   db_type: 'mysql',
   host: 'localhost',
   port: 3306,
-  user: '',
+  user: 'root',
   password: '',
   database: '',
 };
@@ -24,7 +26,7 @@ function App() {
 
   useEffect(() => {
     if (dbConfig) {
-      axios.post('http://localhost:8000/schema', { db_config: dbConfig })
+      axios.post(`${API_URL}/schema`, { db_config: dbConfig })
         .then(res => {
           if (res.data.error) setDbError(res.data.error);
           else {
@@ -48,7 +50,7 @@ function App() {
     setMessages((msgs) => [...msgs, { type: 'user', text: query }]);
     setLoading(true);
     try {
-      const res = await axios.post('http://localhost:8000/chat', {
+      const res = await axios.post(`${API_URL}/chat`, {
         query,
         db_config: dbConfig
       });
@@ -77,7 +79,7 @@ function App() {
     setSchema(null);
     setDbConfig(null);
     try {
-      const res = await axios.post('http://localhost:8000/schema', { db_config: dbForm });
+      const res = await axios.post(`${API_URL}/schema`, { db_config: dbForm });
       if (res.data.error) {
         setDbError(res.data.error);
       } else {
@@ -175,7 +177,7 @@ function App() {
               {msg.download_url && (
                 <a
                   className="download-btn"
-                  href={`http://localhost:8000${msg.download_url}`}
+                  href={`${API_URL}${msg.download_url}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   download
