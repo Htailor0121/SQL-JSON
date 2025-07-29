@@ -21,4 +21,8 @@ The app will run at [http://localhost:3000](http://localhost:3000) by default.
 - The chat will display your query and the response from the backend.
 
 ## Backend
-Make sure the FastAPI backend is running at `http://localhost:8000` (default) for the chat to work. 
+Make sure the FastAPI backend is running at `http://localhost:8000` (default) for the chat to work.
+
+## Deployment (Vercel)
+- When deploying to Vercel, set the **Root Directory** to `frontend` in your Vercel project settings.
+- The build command should be `npm install && npm run build` and the output directory should be `build`. 
