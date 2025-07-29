@@ -9,10 +9,14 @@ from sql_to_json_reporter import QueryConverter
 
 app = FastAPI()
 
-# Allow CORS for local frontend development
+# Allow CORS for deployed Vercel frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://sql-json-kappa.vercel.app",
+        "https://sql-json-git-main-harshs-projects-faeabbc2.vercel.app",
+        "https://sql-json-2ttv7bch5-harshs-projects-faeabbc2.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
