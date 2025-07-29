@@ -8,6 +8,13 @@
           "distDir": "build"
         }
       }
+    ],
+    "ignoreCommand": "echo frontend-only",
+    "routes": [
+      {
+        "src": "/(.*)",
+        "dest": "frontend/build/$1"
+      }
     ]
   }
   
