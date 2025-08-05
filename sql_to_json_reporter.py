@@ -348,6 +348,8 @@ SELECT col1, NULL AS col2 FROM table2
                         stream=False,
                         system="You are a SQL query generator. Generate ONLY the SQL query."
                     )
+                    print("\n Raw model responses:")
+                    print(response['response'])
                     sql_query = response['response'].strip()
                     sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
                     sql_query = sql_query.rstrip(';')
@@ -572,6 +574,51 @@ Example: SELECT * FROM table_name WHERE MONTH(date_column) = 6 LIMIT 1000"""
 
         # --- Auto-join logic for addresses and custcontact ---
         query_lower = natural_language_query.lower()
+        if "history" in query_lower:
+            name_match = re.search(
+                r"(?:customer\s*(?:named|which name is|with name)?\s*)([a-zA-Z\s']+)",
+                natural_language_query,
+                re.IGNORECASE
+                )
+
+            if name_match:
+                customer_name = name_match.group(1).strip()
+                address_cols = [col for col in self.schema.get('addresses', []) if col.lower() != 'custid']
+                contact_cols = [col for col in self.schema.get('custcontact', []) if col.lower() != 'custid']
+
+            # Build SELECT columns
+            select_cols = ["c.*"]
+            select_cols += [f"a.{col}" for col in address_cols]
+            select_cols += [f"cc.{col}" for col in contact_cols]
+
+            sql_query = f"""
+            SELECT {', '.join(select_cols)}
+            FROM customers c
+            LEFT JOIN addresses a ON c.CustID = a.CustID
+            LEFT JOIN custcontact cc ON c.CustID = cc.CustID
+            WHERE c.CustName LIKE '%{customer_name}%'
+            """.strip()
+            print("\nCustom SQL for customer history:")
+            print(sql_query)
+            results = self.execute_query(sql_query)
+            if isinstance(results, dict) and "error" in results:
+                print(f"\nError: {results['error']}")
+                return None
+            if not results:
+                print("\nNo data found matching your query.")
+                return None
+            formatted_results = []
+            for row in results:
+                if 'table_name' not in row:
+                    table_name = self.get_table_name(sql_query)
+                    new_row = {'table_name': table_name}
+                    new_row.update(row)
+                    formatted_results.append(new_row)
+                else:
+                    formatted_results.append(row)
+            filename = self.save_to_json(formatted_results, sql_query)
+            print(f"\nResults have been saved to: {filename}")
+            return formatted_results
         needs_addresses = 'addresses' in query_lower
         needs_custcontact = 'custcontact' in query_lower
         if (needs_addresses or needs_custcontact):
@@ -596,35 +643,23 @@ Example: SELECT * FROM table_name WHERE MONTH(date_column) = 6 LIMIT 1000"""
             print(f"\nAuto-joined SQL: {sql_query}")
 
         results = self.execute_query(sql_query)
-        
         if isinstance(results, dict) and "error" in results:
             print(f"\nError: {results['error']}")
             return None
-        
         if not results:
-            # Check if this was a user detail query that returned no results
-            if 'user_id' in natural_language_query.lower() or 'user id' in natural_language_query.lower():
-                print("\nNo user found with the specified ID.")
-            else:
-                print("\nNo data found matching your query.")
+            print("\nNo data found matching your query.")
             return None
-        
-        # Format results in flat array structure
         formatted_results = []
         for row in results:
-            # Always add table_name if it's not present
             if 'table_name' not in row:
                 table_name = self.get_table_name(sql_query)
                 new_row = {'table_name': table_name}
-                new_row.update(row)  # Add all other fields after table_name
+                new_row.update(row)
                 formatted_results.append(new_row)
             else:
                 formatted_results.append(row)
-        
-        # Save results to file
         filename = self.save_to_json(formatted_results, sql_query)
-        print(f"\nResults have been saved to: {filename}")
-        
+        print(f"\n✅ Results have been saved to: {filename}")
         return formatted_results
 
     def close(self):
