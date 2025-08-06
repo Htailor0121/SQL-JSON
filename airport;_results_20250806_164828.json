@@ -1,0 +1,35 @@
+[
+  {
+    "table_name": "airport;",
+    "AirportID": 1,
+    "Name": "LAX",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "ModifiedBy": 1050975304,
+    "DateAdded": "2023-05-12T04:24:15",
+    "DateModified": "2023-05-13T18:39:27",
+    "Description": "Los Angeles International Airport Service provider LAX"
+  },
+  {
+    "table_name": "airport;",
+    "AirportID": 2,
+    "Name": "SFO",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "ModifiedBy": 1050975304,
+    "DateAdded": "2023-05-18T23:30:29",
+    "DateModified": "2023-05-18T23:31:10",
+    "Description": "San Francisco International"
+  },
+  {
+    "table_name": "airport;",
+    "AirportID": 3,
+    "Name": "SNA",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "ModifiedBy": 1050975304,
+    "DateAdded": "2023-05-18T23:30:48",
+    "DateModified": "2023-05-18T23:31:05",
+    "Description": "John Wayne Airport"
+  }
+]

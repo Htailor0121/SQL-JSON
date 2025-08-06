@@ -21,7 +21,7 @@ DB_NAME = "VMaster7"
 # Ollama Configuration
 OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "gemma3:4b"  # Using smaller model for faster processing
-OLLAMA_TIMEOUT = 120  # 120 seconds timeout
+OLLAMA_TIMEOUT = 500  # 120 seconds timeout
 
 # Initialize Ollama client with timeout
 client = Client(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
@@ -255,241 +255,79 @@ class QueryConverter:
         return None
 
     def natural_language_to_sql(self, query):
-        """Convert natural language query to SQL using schema and model instructions"""
         try:
-            # Improved extraction of table names
-            table_names = []
-            query_lower = query.lower()
-            # Find the block after 'from', 'of', 'table', or 'in' up to 'where', 'column is', or end of string
-            table_block_match = re.search(r'(?:from|of|table|in)\s+([\w\s,]+?)(?:\s+where|\s+column is|$)', query_lower)
-            if table_block_match:
-                possible_tables = re.split(r'\band\b|,|\s+', table_block_match.group(1))
-                table_names = [t.strip() for t in possible_tables if t.strip() in self.schema]
-            # Fallback: if not found, use previous logic
-            if not table_names:
-                table_names = re.findall(r'(?:from|of|table|in)\s+(\w+)', query_lower)
-                table_names = [t for t in table_names if t in self.schema]
-            
-            # Extract requested columns from the query (robust)
-            requested_columns = []
-            # Look for explicit column list after 'column is', 'columns are', etc.
-            columns_match = re.search(r'(?:column is|columns are|where column is|where columns are)\s+([\w,\s]+)', query, re.IGNORECASE)
-            if columns_match:
-                requested_columns = [col.strip() for col in columns_match.group(1).split(',') if col.strip()]
-            # If not found, look for columns after table names (e.g., 'table tbl1, tbl2 col1, col2')
-            elif len(table_names) > 0:
-                # Try to find columns after the last table name
-                after_tables = query.lower().split(table_names[-1].lower(), 1)[-1]
-                possible_cols = re.findall(r'([a-zA-Z_][\w\s,]*)', after_tables)
-                if possible_cols:
-                    # Take the first match and split by comma
-                    first_cols = possible_cols[0]
-                    if any(c.isalpha() for c in first_cols):
-                        requested_columns = [col.strip() for col in first_cols.split(',') if col.strip()]
-            # If still not found, use * (all columns)
-            if not requested_columns:
-                requested_columns = ['*']
-            print(f"DEBUG: Extracted tables: {table_names}")
-            print(f"DEBUG: Requested columns: {requested_columns}")
-            
-            if len(table_names) == 2:
-                # Prepare schema info for both tables
-                schema_info = json.dumps({t: self.schema[t] for t in table_names}, indent=2)
-                columns_str = ', '.join(requested_columns) if requested_columns and requested_columns != ['*'] else '*'
-                # Detect if a join is implied by the query (look for 'based on', 'join', or common key like CustID)
-                join_key = None
-                for key in ['custid', 'customerid', 'id']:
-                    if all(any(key in col.lower() for col in self.schema[t]) for t in table_names):
-                        join_key = key
-                        break
-                join_detected = False
-                if re.search(r'based on|join|matching|with same|using', query.lower()) or join_key:
-                    join_detected = True
-                if join_detected and join_key:
-                    prompt = f"""Generate a SQL query that joins the tables: {', '.join(table_names)}.
-The columns to include are: {columns_str}.
+         # Use shortened schema (first 5 tables only)
+            schema_info = json.dumps(self.schema, indent=2)  # Use full schema
+            # print("\n=== DATABASE SCHEMA ===")
+            # print(json.dumps(self.schema, indent=2))
 
-User request: {query}
+            prompt = f"""
+You are an expert SQL query generator for MySQL.
 
-Available tables and columns:
+You will be given:
+- A full MySQL database schema in JSON format
+- A user’s natural language query
+
+Your job is to generate a **single, valid SQL SELECT query** that fulfills the user's request.
+
+General Rules:
+1. Use only tables and columns listed in the provided schema.
+2. Never hallucinate or guess column/table names.
+3. Use only exact column names (case-sensitive where applicable).
+4. Use LEFT JOINs to join related tables where a foreign key like `CustID`, `CrewID`, etc., exists.
+5. Only include JOINs between tables that share common columns.
+6. If the user specifies a name, ID, or email, add an appropriate WHERE clause.
+7. Use DISTINCT only if the user asks for “unique”, “distinct”, or “different types”.
+8. Only use LIMIT when the user explicitly asks for “top”, “first”, “recent”, or “latest”.
+9. Never use subqueries with `=` that return multiple rows — prefer `IN (...)` or JOINs.
+10. Return only **one SQL SELECT query** — no explanations, no comments, no markdown.
+- If the user asks for **"history", "everything", "full info", or "details"** of a customer (by name or ID) JOIN **all tables** that contain a `CustID` column using LEFT JOINs.
+- If user gives a **CustName** (e.g., 'DAVIS AVIATION'), find the matching `CustID` from the `customers` table and JOIN **all tables** that contain a `CustID` column using LEFT JOIN.
+- Do not use any column unless it appears exactly in the schema.
+- Do not use columns like `status`, `name`, or `email` unless they are explicitly in the table schema.
+- Use meaningful table aliases to keep the query readable.
+- Never return more than one SELECT query. Never include explanations.
+
+
+=== DATABASE SCHEMA ===
 {schema_info}
 
-Instructions:
-- Join the tables on the common key: {join_key}.
-- Select the requested columns from each table, in the same order as listed.
-- If a column does not exist in a table, use NULL AS column_name for that table.
-- Do not include semicolons in the query.
+=== USER QUERY ===
+{query}
+
+=== OUTPUT ===
+[Only one valid SQL SELECT query]
 """
-                else:
-                    prompt = f"""Generate a SQL query that merges data from both tables: {', '.join(table_names)}.
-The columns to include are: {columns_str}.
 
-User request: {query}
+            print(f" Prompt sent to Ollama model: {OLLAMA_MODEL}")
+            response = client.generate(
+            model=OLLAMA_MODEL,
+            prompt=prompt,
+            stream=False,
+            system="You are a SQL generator. Return only the SQL query."
+        )
+            sql_query = response.get("response", "").strip()
 
-Available tables and columns:
-{schema_info}
+            sql_query = re.sub(r"\\b(\\w+)\\.\\1\\.", r"\\1.", sql_query)
 
-Instructions:
-- For each SELECT, use only the requested columns in the same order.
-- If a column does not exist in a table, use NULL AS column_name for that table.
-- Merge the results using UNION ALL.
-- Do not include semicolons in the query.
-- Use simple SELECT statements.
+            sql_query = sql_query.replace("```sql", "").replace("```", "").replace("*/", "").strip()
 
-Example:
-SELECT col1, col2 FROM table1
-UNION ALL
-SELECT col1, NULL AS col2 FROM table2
-"""
-                try:
-                    response = client.generate(
-                        model=OLLAMA_MODEL,
-                        prompt=prompt,
-                        stream=False,
-                        system="You are a SQL query generator. Generate ONLY the SQL query."
-                    )
-                    print("\n Raw model responses:")
-                    print(response['response'])
-                    sql_query = response['response'].strip()
-                    sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
-                    sql_query = sql_query.rstrip(';')
-                    sql_query = re.sub(r'\s+LIMIT\s+\d+', '', sql_query, flags=re.IGNORECASE)
-                    return sql_query
-                except Exception as e:
-                    print(f"Model error: {str(e)}")
-                    # Fallback to simple query
-                    return f"SELECT * FROM {table_names[0]} UNION ALL SELECT * FROM {table_names[1]}"
-            
-            # Fallback to original logic for single table
-            table_name = None
-            table_patterns = [
-                (r'from\s+(\w+)', 'from'),
-                (r'of\s+(\w+)', 'of'),
-                (r'table\s+(\w+)', 'table'),
-                (r'in\s+(\w+)', 'in')
-            ]
-            for pattern, _ in table_patterns:
-                match = re.search(pattern, query_lower)
-                if match:
-                    table_name = match.group(1).strip()
-                    break
-            
-            # Check if table exists in schema
-            if table_name and table_name in self.schema:
-                # Define common condition patterns
-                condition_patterns = {
-                    'on hold': ('OnHold = true', 'OnHold = false'),
-                    'active': ('Inactive = false', 'Inactive = true'),
-                    'inactive': ('Inactive = true', 'Inactive = false'),
-                    'vendor': ('IsVendor = true', 'IsVendor = false'),
-                    'non vendor': ('IsVendor = false', 'IsVendor = true'),
-                    'credit approved': ('CreditAuth = true', 'CreditAuth = false'),
-                    'not credit approved': ('CreditAuth = false', 'CreditAuth = true'),
-                    'locked': ('LockAccount = true', 'LockAccount = false'),
-                    'not locked': ('LockAccount = false', 'LockAccount = true')
-                }
-                
-                # Check for condition patterns
-                for pattern, (true_condition, false_condition) in condition_patterns.items():
-                    if pattern in query_lower:
-                        # Check for negation
-                        if any(neg in query_lower for neg in ['not', 'no', 'non', 'without']):
-                            return f"SELECT * FROM {table_name} WHERE {false_condition}"
-                        else:
-                            return f"SELECT * FROM {table_name} WHERE {true_condition}"
-                
-                # Handle date-based queries
-                date_patterns = {
-                    'today': "CustDateEntered = CURDATE()",
-                    'yesterday': "CustDateEntered = DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
-                    'this week': "CustDateEntered >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)",
-                    'this month': "MONTH(CustDateEntered) = MONTH(CURDATE()) AND YEAR(CustDateEntered) = YEAR(CURDATE())",
-                    'this year': "YEAR(CustDateEntered) = YEAR(CURDATE())"
-                }
-                
-                for pattern, condition in date_patterns.items():
-                    if pattern in query_lower:
-                        return f"SELECT * FROM {table_name} WHERE {condition}"
-                
-                # Handle numeric comparisons
-                numeric_patterns = {
-                    r'credit limit (?:greater than|more than|above) (\d+)': lambda x: f"CreditLimit > {x}",
-                    r'credit limit (?:less than|below|under) (\d+)': lambda x: f"CreditLimit < {x}",
-                    r'credit limit (?:equal to|exactly) (\d+)': lambda x: f"CreditLimit = {x}",
-                    r'discount (?:greater than|more than|above) (\d+)': lambda x: f"CustDiscount > {x}",
-                    r'discount (?:less than|below|under) (\d+)': lambda x: f"CustDiscount < {x}",
-                    r'discount (?:equal to|exactly) (\d+)': lambda x: f"CustDiscount = {x}"
-                }
-                
-                for pattern, condition_func in numeric_patterns.items():
-                    match = re.search(pattern, query_lower)
-                    if match:
-                        value = match.group(1)
-                        return f"SELECT * FROM {table_name} WHERE {condition_func(value)}"
-                
-                # Handle text-based searches
-                text_patterns = {
-                    r'name (?:like|contains|has) "([^"]+)"': lambda x: f"CustName LIKE '%{x}%'",
-                    r'email (?:like|contains|has|is) "([^"]+)"': lambda x: f"Email = '{x}'",
-                    r'type (?:is|equals) "([^"]+)"': lambda x: f"CustType = '{x}'",
-                    r'group (?:is|equals) "([^"]+)"': lambda x: f"GroupVal = '{x}'"
-                }
-                
-                # Handle email directly in the query
-                email_match = re.search(r'(\S+@\S+\.\S+)', query)
-                if email_match:
-                    email = email_match.group(1)
-                    return f"SELECT * FROM {table_name} WHERE Email = '{email}'"
-                
-                for pattern, condition_func in text_patterns.items():
-                    match = re.search(pattern, query_lower)
-                    if match:
-                        value = match.group(1)
-                        return f"SELECT * FROM {table_name} WHERE {condition_func(value)}"
-                
-                # If no specific patterns match, use the model for complex queries
-                schema_info = json.dumps({table_name: self.schema[table_name]}, indent=2)
-                
-                prompt = f"""Generate a SQL query for: {query}
+        # Validate basic structure
+            if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
+                print(f" Invalid SQL returned: {sql_query}")
+                return None
 
-Available tables and columns:
-{schema_info}
+            print(f"🔍 Cleaned SQL: {sql_query}")
+            return sql_query
 
-Instructions:
-1. Use simple SELECT statements
-2. Place WHERE clause before LIMIT
-3. Use proper table names
-4. For date filtering in MySQL, use appropriate date functions
-5. Keep the query simple and direct
-6. Do not include semicolons in the query
-
-Example: SELECT * FROM table_name WHERE MONTH(date_column) = 6 LIMIT 1000"""
-
-                try:
-                    response = client.generate(
-                        model=OLLAMA_MODEL,
-                        prompt=prompt,
-                        stream=False,
-                        system="You are a SQL query generator. Generate ONLY the SQL query."
-                    )
-                    
-                    sql_query = response['response'].strip()
-                    sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
-                    sql_query = sql_query.rstrip(';')
-                    
-                    # Remove LIMIT clause if present
-                    sql_query = re.sub(r'\s+LIMIT\s+\d+', '', sql_query, flags=re.IGNORECASE)
-                    
-                    return sql_query
-                    
-                except Exception as e:
-                    print(f"Model error: {str(e)}")
-                    # Fallback to simple query
-                    return f"SELECT * FROM {table_name}"
-                    
         except Exception as e:
-            print(f"Error generating SQL: {str(e)}")
-            raise
+            print(f" Model error: {str(e)}")
+            return None
+
+        except Exception as e:
+            print(f"Model error: {str(e)}")
+            return None
+
 
     def format_value(self, value, data_type):
         """Format value based on its data type"""
@@ -568,87 +406,23 @@ Example: SELECT * FROM table_name WHERE MONTH(date_column) = 6 LIMIT 1000"""
         return filename 
 
     def process_query(self, natural_language_query):
-        """Process natural language query and return results, with auto-join for addresses and custcontact if mentioned."""
+        """Fully model-based: converts NL to SQL using Ollama + executes + saves result."""
         sql_query = self.natural_language_to_sql(natural_language_query)
         print(f"\nGenerated SQL: {sql_query}")
+        if not sql_query:
+            print("\n Model did not return a SQL query.")
+            return None
 
-        # --- Auto-join logic for addresses and custcontact ---
-        query_lower = natural_language_query.lower()
-        if "history" in query_lower:
-            name_match = re.search(
-                r"(?:customer\s*(?:named|which name is|with name)?\s*)([a-zA-Z\s']+)",
-                natural_language_query,
-                re.IGNORECASE
-                )
-
-            if name_match:
-                customer_name = name_match.group(1).strip()
-                address_cols = [col for col in self.schema.get('addresses', []) if col.lower() != 'custid']
-                contact_cols = [col for col in self.schema.get('custcontact', []) if col.lower() != 'custid']
-
-            # Build SELECT columns
-            select_cols = ["c.*"]
-            select_cols += [f"a.{col}" for col in address_cols]
-            select_cols += [f"cc.{col}" for col in contact_cols]
-
-            sql_query = f"""
-            SELECT {', '.join(select_cols)}
-            FROM customers c
-            LEFT JOIN addresses a ON c.CustID = a.CustID
-            LEFT JOIN custcontact cc ON c.CustID = cc.CustID
-            WHERE c.CustName LIKE '%{customer_name}%'
-            """.strip()
-            print("\nCustom SQL for customer history:")
-            print(sql_query)
-            results = self.execute_query(sql_query)
-            if isinstance(results, dict) and "error" in results:
-                print(f"\nError: {results['error']}")
-                return None
-            if not results:
-                print("\nNo data found matching your query.")
-                return None
-            formatted_results = []
-            for row in results:
-                if 'table_name' not in row:
-                    table_name = self.get_table_name(sql_query)
-                    new_row = {'table_name': table_name}
-                    new_row.update(row)
-                    formatted_results.append(new_row)
-                else:
-                    formatted_results.append(row)
-            filename = self.save_to_json(formatted_results, sql_query)
-            print(f"\nResults have been saved to: {filename}")
-            return formatted_results
-        needs_addresses = 'addresses' in query_lower
-        needs_custcontact = 'custcontact' in query_lower
-        if (needs_addresses or needs_custcontact):
-            # Build SELECT clause with all requested customer columns
-            requested_columns = [
-                'CustID', 'CustName', 'Email', 'CustBranchID', 'CustAccountRep', 'CustType', 'CustSource',
-                'OrderFrequency', 'ProjectedRevenue', 'CreditLimit', 'CustTerms', 'CustDiscount', 'CustNotes', 'UrgentNotes'
-            ]
-            select_cols = [f"c.{col}" for col in requested_columns]
-            join_clauses = []
-            if needs_addresses and 'addresses' in self.schema:
-                address_cols = [col for col in self.schema['addresses'] if col.lower() != 'custid']
-                select_cols += [f"a.{col}" for col in address_cols]
-                join_clauses.append("LEFT JOIN addresses a ON c.CustID = a.CustID")
-            if needs_custcontact and 'custcontact' in self.schema:
-                contact_cols = [col for col in self.schema['custcontact'] if col.lower() != 'custid']
-                select_cols += [f"cc.{col}" for col in contact_cols]
-                join_clauses.append("LEFT JOIN custcontact cc ON c.CustID = cc.CustID")
-            select_clause = ',\n  '.join(select_cols)
-            join_clause = '\n'.join(join_clauses)
-            sql_query = f"SELECT\n  {select_clause}\nFROM customers c\n{join_clause}"
-            print(f"\nAuto-joined SQL: {sql_query}")
-
+    # Step 2: Execute query
         results = self.execute_query(sql_query)
         if isinstance(results, dict) and "error" in results:
-            print(f"\nError: {results['error']}")
+            print(f"\n SQL execution error: {results['error']}")
             return None
         if not results:
             print("\nNo data found matching your query.")
             return None
+
+    # Step 3: Format and save results
         formatted_results = []
         for row in results:
             if 'table_name' not in row:
@@ -658,9 +432,11 @@ Example: SELECT * FROM table_name WHERE MONTH(date_column) = 6 LIMIT 1000"""
                 formatted_results.append(new_row)
             else:
                 formatted_results.append(row)
+
         filename = self.save_to_json(formatted_results, sql_query)
-        print(f"\n✅ Results have been saved to: {filename}")
+        print(f"\nResults have been saved to: {filename}")
         return formatted_results
+
 
     def close(self):
         """Close database connection"""

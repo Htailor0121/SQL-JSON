@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_URL = "https://sql-json.onrender.com";
+const API_URL = "http://localhost:8000";
 
 const DEFAULTS = {
   db_type: 'mysql',

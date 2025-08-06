@@ -1,0 +1,92 @@
+[
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 1,
+    "JobPositionID": 4,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-06-21T11:20:52",
+    "Active": 0,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-06-21T11:20:52"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 4,
+    "JobPositionID": 52,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-09-20T08:05:45",
+    "Active": 0,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-09-20T08:05:45"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 5,
+    "JobPositionID": 53,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-09-22T07:45:04",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-09-22T07:45:04"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 6,
+    "JobPositionID": 4,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-09-26T11:52:47",
+    "Active": 0,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-09-26T11:52:47"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 9,
+    "JobPositionID": 4,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-10-27T04:33:16",
+    "Active": 0,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-10-27T04:33:16"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 10,
+    "JobPositionID": 4,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-10-27T04:40:10",
+    "Active": 0,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-10-27T04:40:10"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 11,
+    "JobPositionID": 4,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-10-27T04:41:39",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-10-27T04:41:39"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 12,
+    "JobPositionID": 52,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-11-08T09:20:53",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-11-08T09:20:53"
+  },
+  {
+    "table_name": "crewassigneddetail",
+    "CrewPositionAssignedID": 13,
+    "JobPositionID": 475,
+    "CrewID": 6,
+    "IsAssignedDate": "2023-11-08T09:32:50",
+    "Active": 1,
+    "AddedBy": 1050975304,
+    "DateAdded": "2023-11-08T09:32:50"
+  }
+]
