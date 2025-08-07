@@ -281,8 +281,22 @@ General Rules:
 8. Only use LIMIT when the user explicitly asks for “top”, “first”, “recent”, or “latest”.
 9. Never use subqueries with `=` that return multiple rows — prefer `IN (...)` or JOINs.
 10. Return only **one SQL SELECT query** — no explanations, no comments, no markdown.
-- If the user asks for **"history", "everything", "full info", or "details"** of a customer (by name or ID) JOIN **all tables** that contain a `CustID` column using LEFT JOINs.
-- If user gives a **CustName** (e.g., 'DAVIS AVIATION'), find the matching `CustID` from the `customers` table and JOIN **all tables** that contain a `CustID` column using LEFT JOIN.
+
+Important Rules:-
+Important Rules:
+- If the user query includes words like "history", "everything", "full info", or "details" about a customer (name or ID):
+  → Do the following:
+    1. From the `customers` table, find the matching customer using: 
+       WHERE customers.CustName LIKE '<name>'
+    2. Identify **all tables that contain the column `CustID`**, including:
+       - customers
+       - addresses
+       - custcontact
+       - orders
+       - etc. (based on schema)
+    3. Generate a SQL SELECT with LEFT JOIN on all those tables using the `CustID` key.
+    4. Return **all columns** from every table, with aliases to avoid conflicts.
+- This way, you show the full history of that customer across all relevant tables.
 - Do not use any column unless it appears exactly in the schema.
 - Do not use columns like `status`, `name`, or `email` unless they are explicitly in the table schema.
 - Use meaningful table aliases to keep the query readable.
@@ -311,21 +325,73 @@ General Rules:
             sql_query = re.sub(r"\\b(\\w+)\\.\\1\\.", r"\\1.", sql_query)
 
             sql_query = sql_query.replace("```sql", "").replace("```", "").replace("*/", "").strip()
+            if "history of" in query.lower():
+                match = re.search(r"history of\s+([a-zA-Z_]+)\s+(.+)", query, re.IGNORECASE)
+                if match:
+                    entity = match.group(1).strip().lower()         
+                    name_value = match.group(2).strip()             
 
-        # Validate basic structure
+                    main_table = None
+                    for table in self.schema:
+                        if entity in table.lower():
+                            main_table = table
+                            break
+
+                    if not main_table:
+                        print(f"Could not identify main table for entity: {entity}")
+                        return None
+
+                    main_id = None
+                    main_columns = self.schema[main_table]
+
+                    for col in main_columns:
+                        col_lower = col.lower()
+                        if col_lower in [f"{entity}id", f"{entity}_id"]:
+                            main_id = col
+                            break
+                        elif col_lower.endswith("id") and entity[:3] in col_lower:
+                            main_id = col
+                            break
+                    if not main_id:
+                        for col in main_columns:
+                            if col.lower().endswith("id"):
+                                main_id = col
+                                break
+
+                    filter_column = None
+                    for col in main_columns:
+                        if "name" in col.lower():
+                            filter_column = col
+                            break
+                    if not filter_column:
+                        filter_column = main_columns[0]  
+
+                    join_tables = [
+                        t for t, cols in self.schema.items()
+                        if t != main_table and any(col.lower() == main_id.lower() for col in cols)
+                    ]
+
+                    print(f"Main table: {main_table}")
+                    print(f"Joining tables with {main_id}: {join_tables}")
+
+                    alias_counter = 0
+                    join_sql = f"FROM {main_table} m\n"
+                    for jt in join_tables:
+                        alias = f"t{alias_counter}"
+                        join_sql += f"LEFT JOIN {jt} {alias} ON m.{main_id} = {alias}.{main_id}\n"
+                        alias_counter += 1
+
+                    sql_query = f"SELECT *\n{join_sql}WHERE m.{filter_column} LIKE '{name_value}';"
+
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
                 print(f" Invalid SQL returned: {sql_query}")
                 return None
 
-            print(f"🔍 Cleaned SQL: {sql_query}")
+            print(f"Cleaned SQL: {sql_query}")
             return sql_query
 
         except Exception as e:
             print(f" Model error: {str(e)}")
-            return None
-
-        except Exception as e:
-            print(f"Model error: {str(e)}")
             return None
 
 
