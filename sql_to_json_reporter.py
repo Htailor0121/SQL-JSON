@@ -257,8 +257,6 @@ class QueryConverter:
     def natural_language_to_sql(self, query):
         try:
             schema_info = json.dumps(self.schema, indent=2)
-
-        # Build a dynamic SQL generation prompt for Gemma
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
 
@@ -266,30 +264,29 @@ You will receive:
 1. A database schema in JSON format (tables and columns exactly as in the DB)
 2. A user's natural language query
 
-Your job:
-- only use tables and columns are exist in the provided schema
-- Only use table and column names that exist in the provided schema."
-- Do not guess names, and if a name does not exist, pick the closest match from the schema."
-- - If the user asks for data from multiple tables, use separate JOINs instead of UNION.
-- Create **one valid SQL SELECT query** that answers the question using only the schema provided.
-- The SQL must be syntactically valid for the correct database type.
-- Never guess table or column names — only use what exists in the schema.
-- Prefer LEFT JOIN when joining on columns with the same name (e.g., CustID, UserID).
+General Rules:
+- Only use table and column names that exist in the provided schema.
+- Do not guess names; if a name is not found, pick the closest match from the schema.
+- Use LEFT JOIN for matching ID/code columns across tables.
 - Always alias columns when there's a name conflict.
 - Output only the SQL query — no explanations, comments, or markdown.
-- For string matches, use = 'value' unless the user explicitly requests partial matches (e.g., "contains", "starts with", "ends with").
-- For date filtering, here is the correct syntax for {self.db.db_type.upper()}:
-   {"YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'" if self.db.db_type == "mysql" else ""}
-   {"EXTRACT(YEAR FROM column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'" if self.db.db_type == "postgresql" else ""}
-   {"STRFTIME('%Y', column) = 'YYYY'" if self.db.db_type == "sqlite" else ""}
-   {"YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'" if self.db.db_type == "mssql" else ""}
-Special Rule for "history", "full details", "everything":
-1. Identify the main entity table based on the query — for example, if user says "history of customer X", find the table with names like 'customer' and columns like 'CustID', 'Name', etc.
-2. Extract the entity name (e.g., "VOLT") from the query.
-3. Find all tables that share the same ID column (e.g., CustID).
-4. LEFT JOIN those tables with the main table.
-5. SELECT all columns from all joined tables.
-6. Use a WHERE clause to filter by name.
+
+Special Rule for **history** queries:
+- Trigger only if the query contains the word "history".
+- Identify the main entity table (e.g., "customers" if it's a customer query).
+- Identify the linking column (e.g., CustID, CustCode) that appears in both the main table and related tables.
+- LEFT JOIN all related tables on that linking column.
+- SELECT all columns from all joined tables.
+- Alias main table as "m" and joined tables as t1, t2, etc.
+- Add a WHERE clause to match the entity name (e.g., m.CustomerName = 'Volt').
+
+Special Rule for **date filtering** queries:
+- Trigger only if the query contains a year, month, or time range.
+- For MySQL/MariaDB: use YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
+- For PostgreSQL: use EXTRACT(YEAR FROM column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
+- For SQLite: use STRFTIME('%Y', column) = 'YYYY'.
+- For MSSQL: use YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
+- Never change the year/month/day from the user's input.
 
 Schema:
 {schema_info}
@@ -302,6 +299,8 @@ Output:
 """
 
 
+
+
             print(f" Prompt sent to Ollama model: {OLLAMA_MODEL}")
             response = client.generate(
             model=OLLAMA_MODEL,
@@ -310,6 +309,14 @@ Output:
             system="You are a SQL generator. Return only the SQL query."
             )
             sql_query = response.get("response", "").strip()
+            if self.db.db_type == "mysql":
+                sql_query = re.sub(
+                r"CAST\s*\(\s*SUBSTR\s*\(\s*(\w+),\s*1,\s*4\s*\)\s*AS\s*INT\s*\)\s*=\s*(\d{4})",
+                r"YEAR(\1) = \2",
+                sql_query,
+                flags=re.IGNORECASE
+            )
+
 
         # Cleanup unwanted formatting
             sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
@@ -349,8 +356,10 @@ Output:
                         join_sql += f"LEFT JOIN {jt} {alias} ON m.{main_id} = {alias}.{main_id}\n"
 
                     sql_query = f"SELECT *\n{join_sql}WHERE m.{filter_column} = '{entity_value}';"
-
-        # Validate
+        # Cleanup unwanted formatting
+            sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
+           
+    #     # Validate
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
                 print(f" Invalid SQL returned: {sql_query}")
                 return None
