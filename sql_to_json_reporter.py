@@ -256,62 +256,51 @@ class QueryConverter:
 
     def natural_language_to_sql(self, query):
         try:
-         # Use shortened schema (first 5 tables only)
-            schema_info = json.dumps(self.schema, indent=2)  # Use full schema
-            # print("\n=== DATABASE SCHEMA ===")
-            # print(json.dumps(self.schema, indent=2))
+            schema_info = json.dumps(self.schema, indent=2)
 
+        # Build a dynamic SQL generation prompt for Gemma
             prompt = f"""
-You are an expert SQL query generator for MySQL.
+You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
 
-You will be given:
-- A full MySQL database schema in JSON format
-- A user’s natural language query
+You will receive:
+1. A database schema in JSON format (tables and columns exactly as in the DB)
+2. A user's natural language query
 
-Your job is to generate a **single, valid SQL SELECT query** that fulfills the user's request.
+Your job:
+- only use tables and columns are exist in the provided schema
+- Only use table and column names that exist in the provided schema."
+- Do not guess names, and if a name does not exist, pick the closest match from the schema."
+- - If the user asks for data from multiple tables, use separate JOINs instead of UNION.
+- Create **one valid SQL SELECT query** that answers the question using only the schema provided.
+- The SQL must be syntactically valid for the correct database type.
+- Never guess table or column names — only use what exists in the schema.
+- Prefer LEFT JOIN when joining on columns with the same name (e.g., CustID, UserID).
+- Always alias columns when there's a name conflict.
+- Output only the SQL query — no explanations, comments, or markdown.
+- For string matches, use = 'value' unless the user explicitly requests partial matches (e.g., "contains", "starts with", "ends with").
+- For date filtering, here is the correct syntax for {self.db.db_type.upper()}:
+   {"YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'" if self.db.db_type == "mysql" else ""}
+   {"EXTRACT(YEAR FROM column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'" if self.db.db_type == "postgresql" else ""}
+   {"STRFTIME('%Y', column) = 'YYYY'" if self.db.db_type == "sqlite" else ""}
+   {"YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'" if self.db.db_type == "mssql" else ""}
+Special Rule for "history", "full details", "everything":
+1. Identify the main entity table based on the query — for example, if user says "history of customer X", find the table with names like 'customer' and columns like 'CustID', 'Name', etc.
+2. Extract the entity name (e.g., "VOLT") from the query.
+3. Find all tables that share the same ID column (e.g., CustID).
+4. LEFT JOIN those tables with the main table.
+5. SELECT all columns from all joined tables.
+6. Use a WHERE clause to filter by name.
 
-General Rules:
-1. Use only tables and columns listed in the provided schema.
-2. Never hallucinate or guess column/table names.
-3. Use only exact column names (case-sensitive where applicable).
-4. Use LEFT JOINs to join related tables where a foreign key like `CustID`, `CrewID`, etc., exists.
-5. Only include JOINs between tables that share common columns.
-6. If the user specifies a name, ID, or email, add an appropriate WHERE clause.
-7. Use DISTINCT only if the user asks for “unique”, “distinct”, or “different types”.
-8. Only use LIMIT when the user explicitly asks for “top”, “first”, “recent”, or “latest”.
-9. Never use subqueries with `=` that return multiple rows — prefer `IN (...)` or JOINs.
-10. Return only **one SQL SELECT query** — no explanations, no comments, no markdown.
-
-Important Rules:-
-Important Rules:
-- If the user query includes words like "history", "everything", "full info", or "details" about a customer (name or ID):
-  → Do the following:
-    1. From the `customers` table, find the matching customer using: 
-       WHERE customers.CustName LIKE '<name>'
-    2. Identify **all tables that contain the column `CustID`**, including:
-       - customers
-       - addresses
-       - custcontact
-       - orders
-       - etc. (based on schema)
-    3. Generate a SQL SELECT with LEFT JOIN on all those tables using the `CustID` key.
-    4. Return **all columns** from every table, with aliases to avoid conflicts.
-- This way, you show the full history of that customer across all relevant tables.
-- Do not use any column unless it appears exactly in the schema.
-- Do not use columns like `status`, `name`, or `email` unless they are explicitly in the table schema.
-- Use meaningful table aliases to keep the query readable.
-- Never return more than one SELECT query. Never include explanations.
-
-
-=== DATABASE SCHEMA ===
+Schema:
 {schema_info}
 
-=== USER QUERY ===
+User Query:
 {query}
 
-=== OUTPUT ===
-[Only one valid SQL SELECT query]
+Output:
+[Only return the SQL SELECT query, no other text]
 """
+
 
             print(f" Prompt sent to Ollama model: {OLLAMA_MODEL}")
             response = client.generate(
@@ -319,70 +308,49 @@ Important Rules:
             prompt=prompt,
             stream=False,
             system="You are a SQL generator. Return only the SQL query."
-        )
+            )
             sql_query = response.get("response", "").strip()
 
-            sql_query = re.sub(r"\\b(\\w+)\\.\\1\\.", r"\\1.", sql_query)
+        # Cleanup unwanted formatting
+            sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
 
-            sql_query = sql_query.replace("```sql", "").replace("```", "").replace("*/", "").strip()
-            if "history of" in query.lower():
-                match = re.search(r"history of\s+([a-zA-Z_]+)\s+(.+)", query, re.IGNORECASE)
+        # If the query is about history, enforce dynamic join building
+            if "history" in query.lower():
+            # Extract the entity name from query (e.g., "history of volt")
+                match = re.search(r"history of\s+(.+)", query, re.IGNORECASE)
                 if match:
-                    entity = match.group(1).strip().lower()         
-                    name_value = match.group(2).strip()             
+                    entity_value = match.group(1).strip()
 
-                    main_table = None
-                    for table in self.schema:
-                        if entity in table.lower():
-                            main_table = table
-                            break
-
-                    if not main_table:
-                        print(f"Could not identify main table for entity: {entity}")
-                        return None
-
-                    main_id = None
-                    main_columns = self.schema[main_table]
-
-                    for col in main_columns:
-                        col_lower = col.lower()
-                        if col_lower in [f"{entity}id", f"{entity}_id"]:
-                            main_id = col
-                            break
-                        elif col_lower.endswith("id") and entity[:3] in col_lower:
-                            main_id = col
-                            break
-                    if not main_id:
-                        for col in main_columns:
-                            if col.lower().endswith("id"):
-                                main_id = col
+                # Identify main table and key column dynamically
+                    main_table, main_id, filter_column = None, None, None
+                    for table, columns in self.schema.items():
+                        if any("name" in col.lower() for col in columns):
+                            filter_column = next((c for c in columns if "name" in c.lower()), None)
+                            if filter_column:
+                                main_table = table
+                            # Find ID column
+                                main_id = next((c for c in columns if c.lower().endswith("id")), None)
                                 break
 
-                    filter_column = None
-                    for col in main_columns:
-                        if "name" in col.lower():
-                            filter_column = col
-                            break
-                    if not filter_column:
-                        filter_column = main_columns[0]  
+                    if not (main_table and main_id):
+                        print("Could not determine entity table/key.")
+                        return None
 
+                # Find related tables
                     join_tables = [
                         t for t, cols in self.schema.items()
-                        if t != main_table and any(col.lower() == main_id.lower() for col in cols)
+                        if t != main_table and main_id in cols
                     ]
 
-                    print(f"Main table: {main_table}")
-                    print(f"Joining tables with {main_id}: {join_tables}")
-
-                    alias_counter = 0
+                # Build JOIN query dynamically
                     join_sql = f"FROM {main_table} m\n"
-                    for jt in join_tables:
-                        alias = f"t{alias_counter}"
+                    for idx, jt in enumerate(join_tables):
+                        alias = f"t{idx}"
                         join_sql += f"LEFT JOIN {jt} {alias} ON m.{main_id} = {alias}.{main_id}\n"
-                        alias_counter += 1
 
-                    sql_query = f"SELECT *\n{join_sql}WHERE m.{filter_column} LIKE '{name_value}';"
+                    sql_query = f"SELECT *\n{join_sql}WHERE m.{filter_column} = '{entity_value}';"
 
+        # Validate
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
                 print(f" Invalid SQL returned: {sql_query}")
                 return None
@@ -393,6 +361,7 @@ Important Rules:
         except Exception as e:
             print(f" Model error: {str(e)}")
             return None
+
 
 
     def format_value(self, value, data_type):
