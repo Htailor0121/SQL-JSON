@@ -21,7 +21,7 @@ DB_NAME = "VMaster7"
 # Ollama Configuration
 OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "gemma3:4b"  # Using smaller model for faster processing
-OLLAMA_TIMEOUT = 500  # 120 seconds timeout
+OLLAMA_TIMEOUT = 500  # 500 seconds timeout
 
 # Initialize Ollama client with timeout
 client = Client(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
@@ -285,6 +285,35 @@ SPECIAL RULE FOR "HISTORY" QUERIES:
 - Alias the main table as `m`, and joined tables as `t1`, `t2`, etc.
 - Include a WHERE clause matching the entity name from the query (e.g., m.CustomerName = 'Volt').
 - SELECT all columns from all joined tables.
+
+Special Rule: ACTIVE/INACTIVE Queries
+- "If the column does not exist in the schema, choose the closest matching column name instead of inventing a new one."
+- Trigger if query contains: active, inactive, enabled, disabled, on, off, yes, no, y, n, true, false.
+- Identify the main table by:
+    1. Prefer table names with "user", "customer", or "client".
+    2. If none, pick the table with the most relevant name column (e.g., UserName, CustomerName).
+- In the identified main table, check for columns in this priority order:
+        1. inactive 
+        2. active
+        3. status
+        4. enabled
+        5. Columns starting with is_
+- If the exact column name does not exist, choose the closest matching column name from the schema — never invent a new one.
+
+- Special handling if the column name is "Inactive":
+    - 'on' means the customer is INACTIVE.
+    - 'off' means the customer is ACTIVE.
+    - Therefore:
+        If query asks for active → `Inactive = 'off'`
+        If query asks for inactive → `Inactive = 'on'`
+- For other status columns:
+    - Normalize possible values:
+        Active → 1, 'Active', TRUE, 'Yes', 'Y', 'On'
+        Inactive → 0, 'Inactive', FALSE, 'No', 'N', 'Off'
+    - If column is numeric/boolean → use 1 for active, 0 for inactive.
+    - If column is string → use 'Active' or 'Inactive'.
+- SELECT all columns from the main table.
+- No JOINs unless explicitly requested.
 
 Special Rule for **date filtering** queries:
 - Trigger only if the query contains a year, month, or time range.
