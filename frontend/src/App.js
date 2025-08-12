@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_URL = "http://localhost:8000";
+const API_URL = "http://192.168.29.87:8000";
 
 const DEFAULTS = {
   db_type: 'mysql',

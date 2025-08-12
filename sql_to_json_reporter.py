@@ -265,20 +265,26 @@ You will receive:
 2. A user's natural language query
 
 General Rules:
-- Only use table and column names that exist in the provided schema.
-- Do not guess names; if a name is not found, pick the closest match from the schema.
+- Never output queries for greetings, small talk, jokes, or unrelated requests.
+- If the query is unrelated to the database, respond only with:
+   NO_SQL_QUERY
+- Only use table and column names from the schema provided.
+- If a column name in the user's query seems similar but is not in the schema, map it to the closest match from the schema without changing meaning.
+- Never invent new column names.
 - Use LEFT JOIN for matching ID/code columns across tables.
 - Always alias columns when there's a name conflict.
 - Output only the SQL query — no explanations, comments, or markdown.
 
-Special Rule for **history** queries:
+SPECIAL RULE FOR "HISTORY" QUERIES:
 - Trigger only if the query contains the word "history".
-- Identify the main entity table (e.g., "customers" if it's a customer query).
-- Identify the linking column (e.g., CustID, CustCode) that appears in both the main table and related tables.
+- Identify the main table by:
+    1. Prioritizing table names containing "customer", "client", or "user".
+    2. If no match, use the table with the most relevant name column (e.g., CustomerName, ClientName, UserName).
+- Identify the linking column (e.g., CustID, ClientID, UserID) that appears in both the main table and related tables.
 - LEFT JOIN all related tables on that linking column.
+- Alias the main table as `m`, and joined tables as `t1`, `t2`, etc.
+- Include a WHERE clause matching the entity name from the query (e.g., m.CustomerName = 'Volt').
 - SELECT all columns from all joined tables.
-- Alias main table as "m" and joined tables as t1, t2, etc.
-- Add a WHERE clause to match the entity name (e.g., m.CustomerName = 'Volt').
 
 Special Rule for **date filtering** queries:
 - Trigger only if the query contains a year, month, or time range.
@@ -321,43 +327,6 @@ Output:
         # Cleanup unwanted formatting
             sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
 
-        # If the query is about history, enforce dynamic join building
-            if "history" in query.lower():
-            # Extract the entity name from query (e.g., "history of volt")
-                match = re.search(r"history of\s+(.+)", query, re.IGNORECASE)
-                if match:
-                    entity_value = match.group(1).strip()
-
-                # Identify main table and key column dynamically
-                    main_table, main_id, filter_column = None, None, None
-                    for table, columns in self.schema.items():
-                        if any("name" in col.lower() for col in columns):
-                            filter_column = next((c for c in columns if "name" in c.lower()), None)
-                            if filter_column:
-                                main_table = table
-                            # Find ID column
-                                main_id = next((c for c in columns if c.lower().endswith("id")), None)
-                                break
-
-                    if not (main_table and main_id):
-                        print("Could not determine entity table/key.")
-                        return None
-
-                # Find related tables
-                    join_tables = [
-                        t for t, cols in self.schema.items()
-                        if t != main_table and main_id in cols
-                    ]
-
-                # Build JOIN query dynamically
-                    join_sql = f"FROM {main_table} m\n"
-                    for idx, jt in enumerate(join_tables):
-                        alias = f"t{idx}"
-                        join_sql += f"LEFT JOIN {jt} {alias} ON m.{main_id} = {alias}.{main_id}\n"
-
-                    sql_query = f"SELECT *\n{join_sql}WHERE m.{filter_column} = '{entity_value}';"
-        # Cleanup unwanted formatting
-            sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
            
     #     # Validate
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
