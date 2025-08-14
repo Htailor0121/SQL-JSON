@@ -17,7 +17,7 @@ DB_USER = "root"
 DB_PASSWORD = "Har@0121"
 DB_HOST = "localhost"
 DB_PORT = 3306  # Default SQL Server port
-DB_NAME = "VMaster7"
+DB_NAME = "vmasternew"
 
 # Ollama Configuration
 OLLAMA_HOST = "http://localhost:11434"
@@ -242,36 +242,44 @@ General Rules:
 
 SPECIAL RULE FOR "HISTORY" QUERIES:
 - Trigger ONLY if the user query contains the exact word "history" (case-insensitive).
-- Identify the main table by:
-    1. Prefer table names containing "customer", "client", or "user".
-    2. If none match, select the table that contains the most relevant name column (e.g., CustomerName, ClientName, UserName).
-- Determine the linking column (e.g., CustID, ClientID, UserID) that appears in BOTH the main table and other tables in the schema.
-- LEFT JOIN ALL other tables in the schema that contain this linking column, excluding the main table itself.
-- Assign aliases in the following order:
-    - Main table as `m`
-    - Joined tables as `t1`, `t2`, `t3`, etc., in the same order they appear in the schema definition.
-- SELECT ALL columns from the main table and ALL joined tables:
-    e.g., `SELECT m.*, t1.*, t2.*`
-- The WHERE clause MUST match the customer's name exactly using the proper column from the schema.
-    e.g., `m.CustName = 'Points north'`
-- Do NOT use LIKE unless the user explicitly requests a partial match (e.g., says "contains" or "starts with").
-- Never skip related tables — include EVERY table that shares the linking column with the main table.
-- Always ORDER results by the main table's primary date column (e.g., `m.CustEnteredDate`) in DESC order if such a column exists.
+
+    IDENTIFY MAIN TABLE:
+    - Prefer table names containing "customer", "client", or "user".
+    - If none match, select the table that contains the most relevant name column (e.g., CustomerName, ClientName, UserName).
+
+    LINKING COLUMN:
+    - Determine the linking column (e.g., CustID, ClientID, UserID) that appears in BOTH the main table and other tables in the schema.
+
+    JOIN RULE:
+    - LEFT JOIN ALL other tables in the schema that contain this linking column, excluding the main table itself.
+    - Assign aliases in the following order:
+        - Main table as `m`
+        - Joined tables as `t1`, `t2`, `t3`, etc., in the same order they appear in the schema definition.
+
+    SELECT COLUMNS:
+    - SELECT ALL columns from the main table and ALL joined tables:
+        e.g., SELECT m.*, t1.*, t2.*.
+
+    WHERE CLAUSE:
+    - The WHERE clause MUST match the customer's name exactly using the proper column from the schema.
+        e.g., m.CustName = 'Points north'
+    - Do NOT use LIKE unless the user explicitly requests a partial match (e.g., says "contains" or "starts with").
+
+DATE FILTER COMBINATION:
+- If the query also contains a year, month, or date range, apply the date filter in addition to the history join rules.
+- Use the main table's primary date column for date filtering unless the query explicitly refers to a date column from another table.
+- MySQL/MariaDB date filter syntax:
+    - YEAR(column) = value
+    - MONTH(column) = value
+    - column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'
+    - DATE_SUB(CURDATE(), INTERVAL N YEAR|MONTH)
+- Keep both the name filter AND the date filter in the WHERE clause.
+
+
+
+SCHEMA ACCURACY:
 - Use only table and column names exactly as they appear in the provided schema.
-
-
-Special Rule for **date filtering** queries:
-- Trigger only if the query contains a year, month, or time range (e.g., "this year", "2024", "past 6 months", "last year").
-- If the database is MySQL/MariaDB, you MUST use only:
-    - YEAR(column) = value   (for exact years)
-    - MONTH(column) = value  (for exact months)
-    - column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'  (for specific date ranges)
-    - DATE_SUB(CURDATE(), INTERVAL N YEAR) or DATE_SUB(CURDATE(), INTERVAL N MONTH) (for "last year", "past N months", "past N years")
-    - NEVER use STRFTIME(), DATE('now', ...), or PostgreSQL EXTRACT() for MySQL.
-- For PostgreSQL: use EXTRACT(YEAR FROM column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
-- For SQLite: use STRFTIME('%Y', column) = 'YYYY'.
-- For MSSQL: use YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
-- Never change the year, month, or day from the user's input.
+- Never skip related tables — include EVERY table that shares the linking column with the main table.
 
 
 Schema:
