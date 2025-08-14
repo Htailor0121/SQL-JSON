@@ -6,6 +6,7 @@ import os
 import re
 from dotenv import load_dotenv
 from ollama import Client
+import requests
 
 # Load environment variables
 load_dotenv()
@@ -172,102 +173,66 @@ class QueryConverter:
     def __init__(self, db_type, db_config):
         self.db = DatabaseConnection(db_type, db_config).connect()
         self.schema = self.get_schema()
-        self.query_patterns = self._initialize_query_patterns()
+        # self.query_patterns = self._initialize_query_patterns()
 
     def get_schema(self):
         """Get database schema information"""
         return self.db.get_schema()
 
-    def _initialize_query_patterns(self):
-        """Initialize dynamic query patterns based on schema"""
-        patterns = {}
-        
-        # Dynamically create patterns for each table
-        for table_name, columns in self.schema.items():
-            # Determine table type based on name and columns
-            table_type = self._analyze_table_type(table_name, columns)
-            
-            # Find potential date and value fields
-            date_fields = [col for col in columns if any(date_term in col.lower() for date_term in ['date', 'created', 'modified', 'updated', 'time'])]
-            value_fields = [col for col in columns if any(value_term in col.lower() for value_term in ['price', 'amount', 'total', 'rate', 'quantity', 'cost', 'value'])]
-            
-            # Find potential foreign keys
-            foreign_keys = {}
-            for col in columns:
-                if col.endswith('_id') or col.endswith('ID'):
-                    referenced_table = self._find_referenced_table(col, table_name)
-                    if referenced_table:
-                        foreign_keys[referenced_table] = f"{table_name}.{col} = {referenced_table}.{referenced_table.replace('s', '')}ID"
-            
-            # Create pattern for this table
-            patterns[table_name] = {
-                'tables': [table_name],
-                'joins': list(foreign_keys.keys()),
-                'conditions': columns,
-                'date_field': date_fields[0] if date_fields else None,
-                'value_field': value_fields[0] if value_fields else None,
-                'join_conditions': foreign_keys,
-                'type': table_type
-            }
-            
-            # Add common patterns based on table type
-            if table_type == 'transaction':
-                patterns[table_name]['conditions'].extend(['status', 'amount', 'date'])
-            elif table_type == 'user':
-                patterns[table_name]['conditions'].extend(['name', 'email', 'status'])
-            elif table_type == 'product':
-                patterns[table_name]['conditions'].extend(['name', 'price', 'stock'])
-            elif table_type == 'menu':
-                patterns[table_name]['conditions'].extend(['name', 'category', 'is_active'])
-        
-        return patterns
-
-    def _analyze_table_type(self, table_name, columns):
-        """Analyze table name and columns to determine table type"""
-        table_name_lower = table_name.lower()
-        columns_lower = [col.lower() for col in columns]
-        
-        if any(term in table_name_lower for term in ['payment', 'transaction', 'order']):
-            return 'transaction'
-        elif any(term in table_name_lower for term in ['user', 'customer', 'client']):
-            return 'user'
-        elif any(term in table_name_lower for term in ['product', 'item', 'goods']):
-            return 'product'
-        elif any(term in table_name_lower for term in ['menu', 'category']):
-            return 'menu'
-        elif any(term in table_name_lower for term in ['log', 'history']):
-            return 'log'
-        elif any(term in table_name_lower for term in ['config', 'setting']):
-            return 'config'
-        else:
-            return 'other'
-
-    def _find_referenced_table(self, column_name, current_table):
-        """Find the table referenced by a foreign key column"""
-        # Remove 'ID' or '_id' suffix
-        base_name = column_name.lower().replace('_id', '').replace('id', '')
-        
-        # Try to find matching table
-        possible_tables = [t for t in self.schema.keys() if t.lower().startswith(base_name)]
-        
-        if possible_tables:
-            return possible_tables[0]
-        return None
-
+    
     def natural_language_to_sql(self, query):
         try:
             schema_info = json.dumps(self.schema, indent=2)
+
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
+The target database type is **{self.db.db_type.upper()}** — you must only use syntax valid for this database type.
 
 You will receive:
 1. A database schema in JSON format (tables and columns exactly as in the DB)
 2. A user's natural language query
 
+
+Special Rule for NON-DATABASE queries:
+- If the query contains both a greeting and a valid database request, IGNORE the greeting entirely and generate SQL for the database request portion.
+    Example: "hey can you give me customer contact number?" → treat as "can you give me customer contact number".
+- You must never generate SQL for queries that are purely greetings, small talk, jokes, chit-chat, or unrelated to the database.
+- Examples of NON-DATABASE queries: "hello", "hi", "hey", "how are you", "good morning", "good evening", "what's up", "sup", "tell me a joke", "thank you", "who are you".
+- Only return `NO_SQL_QUERY` if the ENTIRE query is unrelated to the database schema or contains no retrievable database information.
+- Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
+- Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
+
+TABLE NAME ACCURACY RULE:
+- Use ONLY table names exactly as they appear in the provided schema.
+- Do NOT rename, pluralize, singularize, or add underscores to table names.
+- If a table name in your generated SQL does not exactly match one in the schema, it is WRONG.
+- Example: If the schema has 'custcontact', never change it to 'customer_contact' or 'cust_contact'.
+
+COLUMN LOCATION RULE:
+- Always check the provided schema to determine which table a column belongs to.
+- If the requested column is not found in the main table, search other tables in the schema.
+- If found in a joined table, reference it using that table's alias, never from the main table.
+- Do not guess or invent column locations — only use the actual table from the schema.
+- Example:
+    If 'ContactPhoneNumber' exists in 'custcontact' and not in 'customers':
+    SELECT cc.ContactPhoneNumber
+    FROM customers c
+    JOIN custcontact cc ON c.CustID = cc.CustID;
+- Never select a column from a table if it does not exist in that table according to the schema.
+
+SPECIAL RULE: ACTIVE / INACTIVE STATUS
+- If the schema contains a column named 'Inactive' (case-insensitive), you MUST use that column for all active/inactive filtering.
+- Do NOT use 'IsActive', 'Active', 'Status', or any other column name unless 'Inactive' does NOT exist in the schema.
+- 'Inactive' column meaning:
+    - 'on' → the customer is INACTIVE
+    - 'off' → the customer is ACTIVE
+- If user asks for ACTIVE customers → WHERE Inactive = 'off'
+- If user asks for INACTIVE customers → WHERE Inactive = 'on'
+- This mapping is MANDATORY if 'Inactive' exists in the schema.
+- If the query intent is active/inactive, you must first identify the main table from the schema, then check if 'Inactive' exists. 
+- Never invent a column name not in the schema. If unsure, pick the closest exact match from the schema.
+
 General Rules:
-- Never output queries for greetings, small talk, jokes, or unrelated requests.
-- If the query is unrelated to the database, respond only with:
-   NO_SQL_QUERY
 - Only use table and column names from the schema provided.
 - If a column name in the user's query seems similar but is not in the schema, map it to the closest match from the schema without changing meaning.
 - Never invent new column names.
@@ -276,52 +241,38 @@ General Rules:
 - Output only the SQL query — no explanations, comments, or markdown.
 
 SPECIAL RULE FOR "HISTORY" QUERIES:
-- Trigger only if the query contains the word "history".
+- Trigger ONLY if the user query contains the exact word "history" (case-insensitive).
 - Identify the main table by:
-    1. Prioritizing table names containing "customer", "client", or "user".
-    2. If no match, use the table with the most relevant name column (e.g., CustomerName, ClientName, UserName).
-- Identify the linking column (e.g., CustID, ClientID, UserID) that appears in both the main table and related tables.
-- LEFT JOIN all related tables on that linking column.
-- Alias the main table as `m`, and joined tables as `t1`, `t2`, etc.
-- Include a WHERE clause matching the entity name from the query (e.g., m.CustomerName = 'Volt').
-- SELECT all columns from all joined tables.
+    1. Prefer table names containing "customer", "client", or "user".
+    2. If none match, select the table that contains the most relevant name column (e.g., CustomerName, ClientName, UserName).
+- Determine the linking column (e.g., CustID, ClientID, UserID) that appears in BOTH the main table and other tables in the schema.
+- LEFT JOIN ALL other tables in the schema that contain this linking column, excluding the main table itself.
+- Assign aliases in the following order:
+    - Main table as `m`
+    - Joined tables as `t1`, `t2`, `t3`, etc., in the same order they appear in the schema definition.
+- SELECT ALL columns from the main table and ALL joined tables:
+    e.g., `SELECT m.*, t1.*, t2.*`
+- The WHERE clause MUST match the customer's name exactly using the proper column from the schema.
+    e.g., `m.CustName = 'Points north'`
+- Do NOT use LIKE unless the user explicitly requests a partial match (e.g., says "contains" or "starts with").
+- Never skip related tables — include EVERY table that shares the linking column with the main table.
+- Always ORDER results by the main table's primary date column (e.g., `m.CustEnteredDate`) in DESC order if such a column exists.
+- Use only table and column names exactly as they appear in the provided schema.
 
-Special Rule: ACTIVE/INACTIVE Queries
-- "If the column does not exist in the schema, choose the closest matching column name instead of inventing a new one."
-- Trigger if query contains: active, inactive, enabled, disabled, on, off, yes, no, y, n, true, false.
-- Identify the main table by:
-    1. Prefer table names with "user", "customer", or "client".
-    2. If none, pick the table with the most relevant name column (e.g., UserName, CustomerName).
-- In the identified main table, check for columns in this priority order:
-        1. inactive 
-        2. active
-        3. status
-        4. enabled
-        5. Columns starting with is_
-- If the exact column name does not exist, choose the closest matching column name from the schema — never invent a new one.
-
-- Special handling if the column name is "Inactive":
-    - 'on' means the customer is INACTIVE.
-    - 'off' means the customer is ACTIVE.
-    - Therefore:
-        If query asks for active → `Inactive = 'off'`
-        If query asks for inactive → `Inactive = 'on'`
-- For other status columns:
-    - Normalize possible values:
-        Active → 1, 'Active', TRUE, 'Yes', 'Y', 'On'
-        Inactive → 0, 'Inactive', FALSE, 'No', 'N', 'Off'
-    - If column is numeric/boolean → use 1 for active, 0 for inactive.
-    - If column is string → use 'Active' or 'Inactive'.
-- SELECT all columns from the main table.
-- No JOINs unless explicitly requested.
 
 Special Rule for **date filtering** queries:
-- Trigger only if the query contains a year, month, or time range.
-- For MySQL/MariaDB: use YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
+- Trigger only if the query contains a year, month, or time range (e.g., "this year", "2024", "past 6 months", "last year").
+- If the database is MySQL/MariaDB, you MUST use only:
+    - YEAR(column) = value   (for exact years)
+    - MONTH(column) = value  (for exact months)
+    - column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'  (for specific date ranges)
+    - DATE_SUB(CURDATE(), INTERVAL N YEAR) or DATE_SUB(CURDATE(), INTERVAL N MONTH) (for "last year", "past N months", "past N years")
+    - NEVER use STRFTIME(), DATE('now', ...), or PostgreSQL EXTRACT() for MySQL.
 - For PostgreSQL: use EXTRACT(YEAR FROM column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
 - For SQLite: use STRFTIME('%Y', column) = 'YYYY'.
 - For MSSQL: use YEAR(column) = value OR column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'.
-- Never change the year/month/day from the user's input.
+- Never change the year, month, or day from the user's input.
+
 
 Schema:
 {schema_info}
@@ -338,10 +289,11 @@ Output:
 
             print(f" Prompt sent to Ollama model: {OLLAMA_MODEL}")
             response = client.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            stream=False,
-            system="You are a SQL generator. Return only the SQL query."
+                model=OLLAMA_MODEL,
+                prompt=prompt,
+                stream=False,
+                options={"seed": int(time.time())},  # Random seed for each run
+                system="You are a SQL generator. Return only the SQL query."
             )
             sql_query = response.get("response", "").strip()
             if self.db.db_type == "mysql":
@@ -520,6 +472,15 @@ def main():
         print(f"\nAn error occurred: {str(e)}")
     finally:
         converter.close()
+
+        def unload_model(model_name):
+            try:
+                requests.post(f"{OLLAMA_HOST}/api/unload", json={"model": model_name})
+                print(f" Model '{model_name}' unloaded from memory.")
+            except Exception as e:
+                print(f"Error unloading model: {e}")
+
+        unload_model(OLLAMA_MODEL)
         print("\nProgram completed.")
 
 if __name__ == "__main__":
