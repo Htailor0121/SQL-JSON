@@ -240,7 +240,7 @@ SPECIAL RULE: ACTIVE / INACTIVE STATUS
 - This mapping is MANDATORY if 'Inactive' exists in the schema.
 - If the query intent is active/inactive, you must first identify the main table from the schema, then check if 'Inactive' exists. 
 - Never invent a column name not in the schema. If unsure, pick the closest exact match from the schema.
-hi
+
 General Rules:
 - Only use table and column names from the schema provided.
 - If a column name in the user's query seems similar but is not in the schema, map it to the closest match from the schema without changing meaning.
