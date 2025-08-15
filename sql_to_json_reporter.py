@@ -202,23 +202,32 @@ Special Rule for NON-DATABASE queries:
 - Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
 - Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
 
-TABLE NAME ACCURACY RULE:
-- Use ONLY table names exactly as they appear in the provided schema.
-- Do NOT rename, pluralize, singularize, or add underscores to table names.
-- If a table name in your generated SQL does not exactly match one in the schema, it is WRONG.
-- Example: If the schema has 'custcontact', never change it to 'customer_contact' or 'cust_contact'.
+TABLE NAME ACCURACY RULE (HARD ENFORCEMENT):
+- You must use table names exactly as they appear in the provided schema.
+- Do NOT rename, shorten, abbreviate, pluralize, singularize, or otherwise modify table names in any way.
+- If you cannot find an exact table name match in the schema for a table you want to use, return NO_SQL_QUERY instead of guessing.
 
-COLUMN LOCATION RULE:
-- Always check the provided schema to determine which table a column belongs to.
-- If the requested column is not found in the main table, search other tables in the schema.
-- If found in a joined table, reference it using that table's alias, never from the main table.
-- Do not guess or invent column locations — only use the actual table from the schema.
-- Example:
-    If 'ContactPhoneNumber' exists in 'custcontact' and not in 'customers':
-    SELECT cc.ContactPhoneNumber
-    FROM customers c
-    JOIN custcontact cc ON c.CustID = cc.CustID;
-- Never select a column from a table if it does not exist in that table according to the schema.
+
+COLUMN LOCATION RULE (CROSS-DATABASE DYNAMIC):
+- ALWAYS use the provided schema JSON to determine which table contains each requested column.
+- NEVER assume or guess table names or column locations — rely entirely on the schema.
+- If multiple join paths exist between the main table and the target table:
+    1. Choose the shortest valid join path.
+    2. Prefer direct joins over indirect joins through other tables.
+    3. Display all columns of that table
+
+- If a column is not in the main table:
+    1. Find the correct table from the schema that contains this column.
+    2. Identify the linking column between the main table and that table (match by identical column name and compatible type).
+    3. Use the correct JOIN syntax for the target database type:
+        - MySQL / MariaDB: `JOIN table_name alias ON alias.column = main_alias.column`
+        - PostgreSQL: same as MySQL syntax.
+        - SQLite: same as MySQL syntax.
+        - MSSQL (T-SQL): same as MySQL syntax.
+    4. Use aliases for all tables (main table = `m`, joined tables = `t1`, `t2`, etc.).
+- Table names must exactly match one in the provided schema — do not rename, abbreviate, pluralize, singularize, or alter them in any way.
+- If no matching table name is found in the schema, you must return NO_SQL_QUERY instead of guessing.
+- If a column exists in multiple tables, choose the table that logically matches the query context or is explicitly mentioned by the user.
 
 SPECIAL RULE: ACTIVE / INACTIVE STATUS
 - If the schema contains a column named 'Inactive' (case-insensitive), you MUST use that column for all active/inactive filtering.
@@ -231,7 +240,7 @@ SPECIAL RULE: ACTIVE / INACTIVE STATUS
 - This mapping is MANDATORY if 'Inactive' exists in the schema.
 - If the query intent is active/inactive, you must first identify the main table from the schema, then check if 'Inactive' exists. 
 - Never invent a column name not in the schema. If unsure, pick the closest exact match from the schema.
-
+hi
 General Rules:
 - Only use table and column names from the schema provided.
 - If a column name in the user's query seems similar but is not in the schema, map it to the closest match from the schema without changing meaning.
@@ -265,16 +274,33 @@ SPECIAL RULE FOR "HISTORY" QUERIES:
         e.g., m.CustName = 'Points north'
     - Do NOT use LIKE unless the user explicitly requests a partial match (e.g., says "contains" or "starts with").
 
-DATE FILTER COMBINATION:
-- If the query also contains a year, month, or date range, apply the date filter in addition to the history join rules.
-- Use the main table's primary date column for date filtering unless the query explicitly refers to a date column from another table.
-- MySQL/MariaDB date filter syntax:
-    - YEAR(column) = value
-    - MONTH(column) = value
-    - column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'
-    - DATE_SUB(CURDATE(), INTERVAL N YEAR|MONTH)
-- Keep both the name filter AND the date filter in the WHERE clause.
-
+SPECIAL RULE FOR DATE FILTERING:
+- If the query contains any date, normalize it to the standard format YYYY-MM-DD before using in SQL.
+- Accept all common human date formats, including but not limited to:
+    - DD-MM-YYYY or D-M-YYYY
+    - MM-DD-YYYY or M-D-YYYY
+    - YYYY-MM-DD
+    - Month DD, YYYY (e.g., June 26, 2017)
+    - DD Month YYYY (e.g., 26 June 2017)
+    - Mon DD YYYY (e.g., Jun 26 2017)
+    - DD/Mon/YYYY or MM/DD/YYYY
+    - With or without leading zeros.
+- If the user specifies only a month (e.g., "in May"), convert the month name to its number (May = 5).
+- For MySQL/MariaDB, use MONTH(column) = <month_number> instead of LIKE.
+- If the year is also mentioned (e.g., "May 2020"), use both:
+    MONTH(column) = <month_number> AND YEAR(column) = <year>.
+- Always interpret dates in day-first order if the format is ambiguous and matches the schema’s locale.
+- For MySQL/MariaDB:
+    - For a single exact date, wrap the column in DATE():
+        DATE(column) = 'YYYY-MM-DD'
+    - For a month/year combo, use:
+        MONTH(column) = <month_number> AND YEAR(column) = <year>
+    - For a range, use:
+        column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'
+- Never guess the column name — pick the correct one from the schema that relates to the query context.
+- If the user specifies a single date without a time, wrap the column in DATE():
+    DATE(column) = 'YYYY-MM-DD'
+- This ensures a match even if the column contains a datetime value.
 
 
 SCHEMA ACCURACY:

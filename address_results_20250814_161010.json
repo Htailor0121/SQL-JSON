@@ -1,0 +1,16 @@
+[
+  {
+    "table_name": "address",
+    "AddrStreet": "196 UNIVERSITY PARKWAY",
+    "AddrCity": "POMONA",
+    "AddrState": "CA",
+    "AddrZip": "91768"
+  },
+  {
+    "table_name": "address",
+    "AddrStreet": "null",
+    "AddrCity": "null",
+    "AddrState": "AK",
+    "AddrZip": "null"
+  }
+]

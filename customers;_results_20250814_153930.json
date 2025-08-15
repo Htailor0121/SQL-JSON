@@ -1,0 +1,6 @@
+[
+  {
+    "table_name": "customers;",
+    "COUNT(CustType)": 25300
+  }
+]
