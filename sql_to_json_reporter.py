@@ -7,6 +7,9 @@ import re
 from dotenv import load_dotenv
 from ollama import Client
 import requests
+from sentence_transformers import SentenceTransformer
+import chromadb
+
 
 # Load environment variables
 load_dotenv()
@@ -171,9 +174,47 @@ class DatabaseConnection:
         
 class QueryConverter:       
     def __init__(self, db_type, db_config):
-        self.db = DatabaseConnection(db_type, db_config).connect()
-        self.schema = self.get_schema()
-        # self.query_patterns = self._initialize_query_patterns()
+        self.db_type = db_type
+        self.db_config = db_config
+        try:
+            self.db = DatabaseConnection(db_type, db_config).connect()
+            self.schema = self.get_schema()
+        except Exception as e:
+            raise Exception(f"Database connection failed: {str(e)}")
+        
+        if self.schema:
+            self._init_rag()
+        
+
+    def _init_rag(self):
+        # === RAG Setup (Embedding + Vector Store) ===
+        # Initialize embedding model
+        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        # Initialize Chroma client and collection
+        self.chroma_client = chromadb.Client()
+        self.collection = self.chroma_client.get_or_create_collection(name="db_schema")
+
+        # Clear existing data (optional, so we refresh every run)
+        existing_ids = self.collection.get()["ids"]
+        if existing_ids:  # Only delete if there are IDs
+            self.collection.delete(ids=existing_ids)
+
+
+
+        # Prepare schema text for embeddings
+        docs = []
+        ids = []
+        for table, columns in self.schema.items():
+            content = f"Table: {table} | Columns: {', '.join(columns)}"
+            docs.append(content)
+            ids.append(table)
+
+        # Generate embeddings & insert into Chroma
+        embeddings = self.embedding_model.encode(docs).tolist()
+        self.collection.add(documents=docs, embeddings=embeddings, ids=ids)
+
+        print(f"[RAG] Stored {len(docs)} tables into Chroma vector store.")
 
     def get_schema(self):
         """Get database schema information"""
@@ -182,7 +223,17 @@ class QueryConverter:
     
     def natural_language_to_sql(self, query):
         try:
-            schema_info = json.dumps(self.schema, indent=2)
+            # RAG Search: Get relevant schema chunks
+            rag_results = self.collection.query(
+                query_texts=[query],
+                n_results=5  # adjust for more or fewer tables
+            )
+            retrieved_docs = rag_results['documents'][0]
+
+# Use only relevant parts of schema in the prompt
+            schema_info = "\n".join(retrieved_docs)
+
+
 
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
@@ -202,10 +253,21 @@ Special Rule for NON-DATABASE queries:
 - Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
 - Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
 
+
 TABLE NAME ACCURACY RULE (HARD ENFORCEMENT):
 - You must use table names exactly as they appear in the provided schema.
 - Do NOT rename, shorten, abbreviate, pluralize, singularize, or otherwise modify table names in any way.
 - If you cannot find an exact table name match in the schema for a table you want to use, return NO_SQL_QUERY instead of guessing.
+
+SPECIAL RULE FOR "VENDOR" QUERIES (HARD ENFORCEMENT):
+- IMPORTANT: There is NO "vendors" table in the schema.
+- Vendors are represented by rows in the "customers" table with IsVendor = ON.
+- If a query mentions "vendor" or "vendors":
+    - Always use the "customers" table with condition: customers.IsVendor = ON
+    - Join with related tables (e.g., address, custcontact) using CustID where necessary.
+- NEVER create or reference a "vendors" table.
+- NEVER use VendorID — it does not exist in the schema.
+- If you cannot satisfy the vendor request with these rules, return NO_SQL_QUERY.
 
 
 COLUMN LOCATION RULE (CROSS-DATABASE DYNAMIC):
@@ -216,7 +278,9 @@ COLUMN LOCATION RULE (CROSS-DATABASE DYNAMIC):
     2. Prefer direct joins over indirect joins through other tables.
     3. Display all columns of that table
 
-- If a column is not in the main table:
+    - If the user does not specify which columns to retrieve, ALWAYS return ALL columns of the main table by listing them explicitly (not using SELECT *).
+
+    - If a column is not in the main table:
     1. Find the correct table from the schema that contains this column.
     2. Identify the linking column between the main table and that table (match by identical column name and compatible type).
     3. Use the correct JOIN syntax for the target database type:
@@ -228,6 +292,14 @@ COLUMN LOCATION RULE (CROSS-DATABASE DYNAMIC):
 - Table names must exactly match one in the provided schema — do not rename, abbreviate, pluralize, singularize, or alter them in any way.
 - If no matching table name is found in the schema, you must return NO_SQL_QUERY instead of guessing.
 - If a column exists in multiple tables, choose the table that logically matches the query context or is explicitly mentioned by the user.
+
+LINKING COLUMN OUTPUT RULE:
+- Whenever joining two or more tables, always include at least one linking column from the join condition in the SELECT clause.
+- This linking column must be either from the main table or the joined table, whichever makes the relationship clearer.
+- If the join is on CustID → include CustID in the output.
+- If the join is on AddrID → include AddrID in the output.
+- If both exist, include both.
+- This ensures you can always trace which main record the joined data belongs to.
 
 SPECIAL RULE: ACTIVE / INACTIVE STATUS
 - If the schema contains a column named 'Inactive' (case-insensitive), you MUST use that column for all active/inactive filtering.
@@ -241,6 +313,7 @@ SPECIAL RULE: ACTIVE / INACTIVE STATUS
 - If the query intent is active/inactive, you must first identify the main table from the schema, then check if 'Inactive' exists. 
 - Never invent a column name not in the schema. If unsure, pick the closest exact match from the schema.
 
+
 General Rules:
 - Only use table and column names from the schema provided.
 - If a column name in the user's query seems similar but is not in the schema, map it to the closest match from the schema without changing meaning.
@@ -248,6 +321,17 @@ General Rules:
 - Use LEFT JOIN for matching ID/code columns across tables.
 - Always alias columns when there's a name conflict.
 - Output only the SQL query — no explanations, comments, or markdown.
+
+MANDATORY COLUMN SELECTION RULE:
+- If the user query requests data from a table but does not explicitly specify which columns to retrieve, you MUST include ALL columns from that table in the SELECT clause by explicitly listing them (never use SELECT *).
+- Example:
+  User: "give me custcontact of customer LCLAA"
+  Correct SQL:
+  SELECT c.ContactId, c.CustId, c.ContactTypeID, c.ContactFirstName, c.ContactLastName,
+         c.ContactAddrID, c.ContactEmail, c.ContactTitle, c.ContactPhoneNumber
+  FROM custcontact c
+  JOIN customers m ON c.CustId = m.CustID
+  WHERE m.CustName = 'LCLAA';
 
 SPECIAL RULE FOR "HISTORY" QUERIES:
 - Trigger ONLY if the user query contains the exact word "history" (case-insensitive).
@@ -307,10 +391,16 @@ SCHEMA ACCURACY:
 - Use only table and column names exactly as they appear in the provided schema.
 - Never skip related tables — include EVERY table that shares the linking column with the main table.
 
+VALUE MATCHING STRATEGY (SMART FUZZY FALLBACK):
+- First, attempt an exact match using `=`.
+- If the exact match returns no rows, automatically fallback to case-insensitive substring match using `LOWER(column) LIKE LOWER('%value%')`.
+- Only apply `LIKE` when necessary to account for typos or case mismatches.
 
-Schema:
+
+Relevant Schema (retrieved via semantic search):
 {schema_info}
 
+Only use these tables and columns. If something is missing here, assume it does not exist in the database.
 User Query:
 {query}
 

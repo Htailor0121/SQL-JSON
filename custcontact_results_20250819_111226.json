@@ -1,0 +1,38 @@
+[
+  {
+    "table_name": "custcontact",
+    "ContactPhoneNumber": "(412) 341-4898",
+    "ContactId": 28693,
+    "CustId": 2147156328,
+    "ContactTypeID": 1,
+    "ContactFirstName": "Lisa",
+    "ContactLastName": "Good",
+    "ContactAddrID": "null",
+    "ContactEmail": "@nfma.org",
+    "ContactTitle": "null"
+  },
+  {
+    "table_name": "custcontact",
+    "ContactPhoneNumber": "null",
+    "ContactId": 28693,
+    "CustId": 2147156328,
+    "ContactTypeID": 1,
+    "ContactFirstName": "Lisa",
+    "ContactLastName": "Good",
+    "ContactAddrID": "null",
+    "ContactEmail": "@nfma.org",
+    "ContactTitle": "null"
+  },
+  {
+    "table_name": "custcontact",
+    "ContactPhoneNumber": "(412) 341-4894",
+    "ContactId": 28693,
+    "CustId": 2147156328,
+    "ContactTypeID": 1,
+    "ContactFirstName": "Lisa",
+    "ContactLastName": "Good",
+    "ContactAddrID": "null",
+    "ContactEmail": "@nfma.org",
+    "ContactTitle": "null"
+  }
+]
