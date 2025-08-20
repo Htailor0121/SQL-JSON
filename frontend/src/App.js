@@ -165,7 +165,7 @@ function App() {
           <div className="schema-loading">Loading schema...</div>
         )}
       </div>
-      <h1>SQL-JSON Chat</h1>
+      <h1>NL-SQL Chat</h1>
       <div className="chat-box" ref={chatBoxRef}>
         {messages.map((msg, idx) => (
           <div key={idx} className={`message ${msg.type}`}>

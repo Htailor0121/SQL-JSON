@@ -231,9 +231,7 @@ class QueryConverter:
             retrieved_docs = rag_results['documents'][0]
 
 # Use only relevant parts of schema in the prompt
-            schema_info = "\n".join(retrieved_docs)
-
-
+            schema_info = json.dumps(self.schema, indent=2)
 
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
@@ -253,6 +251,61 @@ Special Rule for NON-DATABASE queries:
 - Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
 - Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
 
+MANDATORY COLUMN SELECTION RULE (STRICT ENFORCEMENT):
+
+- If the user query requests data from a table but does not explicitly specify which columns to retrieve:
+    1. You MUST expand to ALL columns of that table using EXACTLY the names shown in the provided schema JSON.
+    2. You MUST list the columns in the same order as in the schema.
+    3. You MUST NOT use SELECT * under any circumstances.
+    4. You MUST NOT invent or guess new columns (e.g., CustStatus, CustCity, CustState, CustZip, ContactId).
+    5. You MUST NOT assume common CRM fields if they do not exist in the schema.
+    6. If the schema snippet is incomplete, ONLY use the columns that are visible in the snippet — never add extras.
+    7. If you are unsure about a column, omit it rather than guessing.
+    8. When joining tables, only include columns that actually exist in those tables’ schema.
+
+SCHEMA COMPLETENESS RULE (CRITICAL):
+
+- If the schema snippet for a table appears incomplete (missing some columns), you MUST NOT invent or guess additional columns.
+- In that case, you MUST only output the columns shown in the provided schema snippet.
+- If the user query requests "all data" and the schema snippet is incomplete, include only the visible columns.
+- Never assume common fields like CustStatus, CustCity, CustState, CustZip if they are not explicitly listed in the schema snippet.
+
+SPECIAL RULE FOR "HISTORY" OR "DATA OF <NAME>" QUERIES:
+
+- If the user query contains the exact word "history" OR the phrase "data of <person name>":
+-    → ALWAYS treat it as a full retrieval across ALL related tables, not just one table.
+-    → Main table must be `customers`.
+-    → LEFT JOIN with `address` ON customers.CustID = address.CustID
+-    → LEFT JOIN with `custcontact` ON customers.CustID = custcontact.CustId
+-    → SELECT all columns from all three tables, listed explicitly and in schema order.
+If the user query contains the exact word "history" OR the phrase "data of <person name>":
+   → ALWAYS retrieve FULL DATA across all related tables.
+   → Main table must be `customers` (aliased as m).
+   → LEFT JOIN with `address` (aliased as a) ON m.CustID = a.CustID.
+   → LEFT JOIN with `custcontact` (aliased as cc) ON m.CustID = cc.CustId.
+   → SELECT ALL columns from all three tables explicitly, in schema order:
+       SELECT m.*, a.*, cc.*
+   → WHERE clause must be: LOWER(m.CustName) = LOWER('<name>')
+
+SPECIAL RULE FOR "BRANCH" QUERIES:
+
+- - If the query mentions "branch of <name>", ALWAYS treat <name> as a customer name, not a branch name.
+    → Use customers as the main table (alias c).
+    → LEFT JOIN branch (alias b) ON c.CustBranchID = b.BranchID
+    → SELECT b.*
+    → WHERE LOWER(c.CustName) = LOWER('<customer name>').
+    → LEFT JOIN branch (alias b) ON c.CustBranchID = b.BranchID
+    → SELECT b.* 
+    → WHERE LOWER(c.CustName) = LOWER('<customer name>').
+- Never assume <name> is a branch unless the query explicitly says "branch name" or "branch called".
+
+- If the query mentions a branch directly by name:
+    → Use branch as the main table (alias b).
+    → SELECT b.* 
+    → WHERE LOWER(b.BranchName) = LOWER('<branch name>').
+    → If exact match returns no rows, fallback to:
+        WHERE LOWER(b.BranchName) LIKE LOWER('%<branch name>%').
+
 
 TABLE NAME ACCURACY RULE (HARD ENFORCEMENT):
 - You must use table names exactly as they appear in the provided schema.
@@ -261,37 +314,13 @@ TABLE NAME ACCURACY RULE (HARD ENFORCEMENT):
 
 SPECIAL RULE FOR "VENDOR" QUERIES (HARD ENFORCEMENT):
 - IMPORTANT: There is NO "vendors" table in the schema.
-- Vendors are represented by rows in the "customers" table with IsVendor = ON.
+- Vendors are represented by rows in the "customers" table with IsVendor = 'ON'.
 - If a query mentions "vendor" or "vendors":
-    - Always use the "customers" table with condition: customers.IsVendor = ON
+    - Always use the "customers" table with condition: customers.IsVendor = 'ON'
     - Join with related tables (e.g., address, custcontact) using CustID where necessary.
 - NEVER create or reference a "vendors" table.
 - NEVER use VendorID — it does not exist in the schema.
-- If you cannot satisfy the vendor request with these rules, return NO_SQL_QUERY.
-
-
-COLUMN LOCATION RULE (CROSS-DATABASE DYNAMIC):
-- ALWAYS use the provided schema JSON to determine which table contains each requested column.
-- NEVER assume or guess table names or column locations — rely entirely on the schema.
-- If multiple join paths exist between the main table and the target table:
-    1. Choose the shortest valid join path.
-    2. Prefer direct joins over indirect joins through other tables.
-    3. Display all columns of that table
-
-    - If the user does not specify which columns to retrieve, ALWAYS return ALL columns of the main table by listing them explicitly (not using SELECT *).
-
-    - If a column is not in the main table:
-    1. Find the correct table from the schema that contains this column.
-    2. Identify the linking column between the main table and that table (match by identical column name and compatible type).
-    3. Use the correct JOIN syntax for the target database type:
-        - MySQL / MariaDB: `JOIN table_name alias ON alias.column = main_alias.column`
-        - PostgreSQL: same as MySQL syntax.
-        - SQLite: same as MySQL syntax.
-        - MSSQL (T-SQL): same as MySQL syntax.
-    4. Use aliases for all tables (main table = `m`, joined tables = `t1`, `t2`, etc.).
-- Table names must exactly match one in the provided schema — do not rename, abbreviate, pluralize, singularize, or alter them in any way.
-- If no matching table name is found in the schema, you must return NO_SQL_QUERY instead of guessing.
-- If a column exists in multiple tables, choose the table that logically matches the query context or is explicitly mentioned by the user.
+- If you cannot satisfy the vendor request with these rules, return exactly: NO_SQL_QUERY.
 
 LINKING COLUMN OUTPUT RULE:
 - Whenever joining two or more tables, always include at least one linking column from the join condition in the SELECT clause.
@@ -321,42 +350,6 @@ General Rules:
 - Use LEFT JOIN for matching ID/code columns across tables.
 - Always alias columns when there's a name conflict.
 - Output only the SQL query — no explanations, comments, or markdown.
-
-MANDATORY COLUMN SELECTION RULE:
-- If the user query requests data from a table but does not explicitly specify which columns to retrieve, you MUST include ALL columns from that table in the SELECT clause by explicitly listing them (never use SELECT *).
-- Example:
-  User: "give me custcontact of customer LCLAA"
-  Correct SQL:
-  SELECT c.ContactId, c.CustId, c.ContactTypeID, c.ContactFirstName, c.ContactLastName,
-         c.ContactAddrID, c.ContactEmail, c.ContactTitle, c.ContactPhoneNumber
-  FROM custcontact c
-  JOIN customers m ON c.CustId = m.CustID
-  WHERE m.CustName = 'LCLAA';
-
-SPECIAL RULE FOR "HISTORY" QUERIES:
-- Trigger ONLY if the user query contains the exact word "history" (case-insensitive).
-
-    IDENTIFY MAIN TABLE:
-    - Prefer table names containing "customer", "client", or "user".
-    - If none match, select the table that contains the most relevant name column (e.g., CustomerName, ClientName, UserName).
-
-    LINKING COLUMN:
-    - Determine the linking column (e.g., CustID, ClientID, UserID) that appears in BOTH the main table and other tables in the schema.
-
-    JOIN RULE:
-    - LEFT JOIN ALL other tables in the schema that contain this linking column, excluding the main table itself.
-    - Assign aliases in the following order:
-        - Main table as `m`
-        - Joined tables as `t1`, `t2`, `t3`, etc., in the same order they appear in the schema definition.
-
-    SELECT COLUMNS:
-    - SELECT ALL columns from the main table and ALL joined tables:
-        e.g., SELECT m.*, t1.*, t2.*.
-
-    WHERE CLAUSE:
-    - The WHERE clause MUST match the customer's name exactly using the proper column from the schema.
-        e.g., m.CustName = 'Points north'
-    - Do NOT use LIKE unless the user explicitly requests a partial match (e.g., says "contains" or "starts with").
 
 SPECIAL RULE FOR DATE FILTERING:
 - If the query contains any date, normalize it to the standard format YYYY-MM-DD before using in SQL.
