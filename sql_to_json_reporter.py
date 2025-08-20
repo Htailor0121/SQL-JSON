@@ -270,6 +270,15 @@ SCHEMA COMPLETENESS RULE (CRITICAL):
 - If the user query requests "all data" and the schema snippet is incomplete, include only the visible columns.
 - Never assume common fields like CustStatus, CustCity, CustState, CustZip if they are not explicitly listed in the schema snippet.
 
+SPECIAL RULE FOR "UNIVERSAL NAME SEARCH":
+- If the user query is just a name (e.g., "sanjay patel"), without specifying branch/history/contact:
+   → Search across ALL tables in the schema.
+   → For every table:
+       1. Identify text-like columns (VARCHAR, TEXT, CHAR, NVARCHAR, etc.).
+       2. Generate a SELECT that returns all columns from that table where LOWER(column) = LOWER('<name>') OR LOWER(column) LIKE LOWER('%<name>%').
+       3. Add a column 'table_name' in the SELECT to show from which table the row came.
+   → Combine all these SELECTs with UNION ALL.
+
 SPECIAL RULE FOR "HISTORY" OR "DATA OF <NAME>" QUERIES:
 
 - If the user query contains the exact word "history" OR the phrase "data of <person name>":
@@ -401,9 +410,6 @@ Output:
 [Only return the SQL SELECT query, no other text]
 """
 
-
-
-
             print(f" Prompt sent to Ollama model: {OLLAMA_MODEL}")
             response = client.generate(
                 model=OLLAMA_MODEL,
@@ -420,7 +426,6 @@ Output:
                 sql_query,
                 flags=re.IGNORECASE
             )
-
 
         # Cleanup unwanted formatting
             sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
