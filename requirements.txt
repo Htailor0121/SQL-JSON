@@ -1,7 +1,27 @@
 fastapi
 uvicorn
+
+# Database clients
 pymysql
 psycopg2-binary
+pyodbc
+
+# Environment variables
 python-dotenv
+
+# LLM / Ollama client
 ollama
-pyodbc 
+
+# Embeddings + vector store
+sentence-transformers
+chromadb
+
+# JSON/table output formatting
+tabulate
+
+# SQL parsing/validation
+sql-metadata
+sqlparse
+
+# HTTP calls (used in unload_model + Ollama fallback)
+requests

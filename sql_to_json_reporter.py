@@ -9,6 +9,8 @@ from ollama import Client
 import requests
 from sentence_transformers import SentenceTransformer
 import chromadb
+import sqlparse
+from sql_metadata import Parser
 
 
 # Load environment variables
@@ -183,8 +185,7 @@ class QueryConverter:
             raise Exception(f"Database connection failed: {str(e)}")
         
         if self.schema:
-            self._init_rag()
-        
+            self._init_rag()        
 
     def _init_rag(self):
         # === RAG Setup (Embedding + Vector Store) ===
@@ -199,8 +200,6 @@ class QueryConverter:
         existing_ids = self.collection.get()["ids"]
         if existing_ids:  # Only delete if there are IDs
             self.collection.delete(ids=existing_ids)
-
-
 
         # Prepare schema text for embeddings
         docs = []
@@ -323,9 +322,9 @@ TABLE NAME ACCURACY RULE (HARD ENFORCEMENT):
 
 SPECIAL RULE FOR "VENDOR" QUERIES (HARD ENFORCEMENT):
 - IMPORTANT: There is NO "vendors" table in the schema.
-- Vendors are represented by rows in the "customers" table with IsVendor = 'ON'.
+- Vendors are represented by rows in the "customers" table with IsVendor = 'YES'.
 - If a query mentions "vendor" or "vendors":
-    - Always use the "customers" table with condition: customers.IsVendor = 'ON'
+    - Always use the "customers" table with condition: customers.IsVendor = 'YES'
     - Join with related tables (e.g., address, custcontact) using CustID where necessary.
 - NEVER create or reference a "vendors" table.
 - NEVER use VendorID — it does not exist in the schema.
@@ -507,7 +506,6 @@ Output:
     def save_to_json(self, data, sql_query, filename_prefix=None):
         """Save results to JSON file"""
         if filename_prefix is None:
-            # Check if this is a user references query
             if "UNION ALL" in sql_query and "user_id" in sql_query:
                 filename_prefix = "user_references"
             else:
@@ -528,8 +526,7 @@ Output:
         if not sql_query:
             print("\n Model did not return a SQL query.")
             return None
-
-    # Step 2: Execute query
+    
         results = self.execute_query(sql_query)
         if isinstance(results, dict) and "error" in results:
             print(f"\n SQL execution error: {results['error']}")
@@ -538,7 +535,6 @@ Output:
             print("\nNo data found matching your query.")
             return None
 
-    # Step 3: Format and save results
         formatted_results = []
         for row in results:
             if 'table_name' not in row:
@@ -552,7 +548,6 @@ Output:
         filename = self.save_to_json(formatted_results, sql_query)
         print(f"\nResults have been saved to: {filename}")
         return formatted_results
-
 
     def close(self):
         """Close database connection"""
