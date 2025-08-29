@@ -22,7 +22,7 @@ DB_USER = "root"
 DB_PASSWORD = "Har@0121"
 DB_HOST = "localhost"
 DB_PORT = 3306  # Default SQL Server port
-DB_NAME = "vmasternew"
+DB_NAME = "vmaster7"
 
 # Ollama Configuration
 OLLAMA_HOST = "http://localhost:11434"
@@ -173,6 +173,7 @@ class DatabaseConnection:
         except Exception as e:
             print(f"Error getting schema: {str(e)}")
             raise
+
         
 class QueryConverter:       
     def __init__(self, db_type, db_config):
@@ -185,33 +186,49 @@ class QueryConverter:
             raise Exception(f"Database connection failed: {str(e)}")
         
         if self.schema:
-            self._init_rag()        
+            self._init_rag()
+
+    def _safe_metadata(self, value):
+        """Convert any Python object into a ChromaDB-safe metadata value."""
+        import json
+        from datetime import datetime
+        from decimal import Decimal
+
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, (datetime, Decimal)):
+            return str(value)
+        # Lists, dicts, sets, tuples → JSON string
+        return json.dumps(value, default=str)
 
     def _init_rag(self):
         # === RAG Setup (Embedding + Vector Store) ===
-        # Initialize embedding model
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-
-        # Initialize Chroma client and collection
         self.chroma_client = chromadb.Client()
         self.collection = self.chroma_client.get_or_create_collection(name="db_schema")
 
-        # Clear existing data (optional, so we refresh every run)
-        existing_ids = self.collection.get()["ids"]
-        if existing_ids:  # Only delete if there are IDs
-            self.collection.delete(ids=existing_ids)
+        # Clear old data
+        existing = self.collection.get()
+        if existing and existing.get("ids"):
+            self.collection.delete(ids=existing["ids"])
 
-        # Prepare schema text for embeddings
-        docs = []
-        ids = []
+        docs, ids, metadatas = [], [], []
+
         for table, columns in self.schema.items():
-            content = f"Table: {table} | Columns: {', '.join(columns)}"
-            docs.append(content)
+            docs.append(f"{table} {' '.join(columns)}")
             ids.append(table)
+            metadatas.append({
+            "table": str(table),
+            "columns": json.dumps(columns) # <<--- FIXED
+            })
 
-        # Generate embeddings & insert into Chroma
         embeddings = self.embedding_model.encode(docs).tolist()
-        self.collection.add(documents=docs, embeddings=embeddings, ids=ids)
+        self.collection.add(
+            documents=docs,
+            embeddings=embeddings,
+            ids=ids,
+            metadatas=metadatas
+        )
 
         print(f"[RAG] Stored {len(docs)} tables into Chroma vector store.")
 
@@ -224,14 +241,25 @@ class QueryConverter:
         try:
             # RAG Search: Get relevant schema chunks
             rag_results = self.collection.query(
-                query_texts=[query],
-                n_results=5  # adjust for more or fewer tables
-            )
-            retrieved_docs = rag_results['documents'][0]
+            query_texts=[query],
+            n_results=6
+        )
 
-# Use only relevant parts of schema in the prompt
-            schema_info = json.dumps(self.schema, indent=2)
+# Build a minimal schema dict from metadatas
+            relevant_schema = {}
+            if rag_results and rag_results.get("metadatas") and len(rag_results["metadatas"]) > 0:
+                for md in rag_results["metadatas"][0]:
+                    tbl = md.get("table")
+                    cols_raw = md.get("columns", "[]")
+                    try:
+                        cols = json.loads(cols_raw) if isinstance(cols_raw, str) else []
+                    except:
+                        cols = []
+                    if tbl and cols:
+                        relevant_schema[tbl] = cols
 
+# Fallback to full schema if RAG returned nothing
+            schema_info = json.dumps(relevant_schema if relevant_schema else self.schema, indent=2)
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
 The target database type is **{self.db.db_type.upper()}** — you must only use syntax valid for this database type.
@@ -281,11 +309,11 @@ SPECIAL RULE FOR "UNIVERSAL NAME SEARCH":
 SPECIAL RULE FOR "HISTORY" OR "DATA OF <NAME>" QUERIES:
 
 - If the user query contains the exact word "history" OR the phrase "data of <person name>":
--    → ALWAYS treat it as a full retrieval across ALL related tables, not just one table.
--    → Main table must be `customers`.
--    → LEFT JOIN with `address` ON customers.CustID = address.CustID
--    → LEFT JOIN with `custcontact` ON customers.CustID = custcontact.CustId
--    → SELECT all columns from all three tables, listed explicitly and in schema order.
+   → ALWAYS treat it as a full retrieval across ALL related tables, not just one table.
+   → Main table must be `customers`.
+   → LEFT JOIN with `address` ON customers.CustID = address.CustID
+   → LEFT JOIN with `custcontact` ON customers.CustID = custcontact.CustId
+   → SELECT all columns from all three tables, listed explicitly and in schema order.
 If the user query contains the exact word "history" OR the phrase "data of <person name>":
    → ALWAYS retrieve FULL DATA across all related tables.
    → Main table must be `customers` (aliased as m).
