@@ -17,12 +17,12 @@ from sql_metadata import Parser
 load_dotenv()
 
 # Database Configuration
-DB_TYPE = "mysql"  
-DB_USER = "root"
-DB_PASSWORD = "Har@0121"
-DB_HOST = "localhost"
-DB_PORT = 3306  # Default SQL Server port
-DB_NAME = "vmaster7"
+DB_TYPE = os.getenv("DB_TYPE", "mysql")
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_NAME = os.getenv("DB_NAME", "")
 
 # Ollama Configuration
 OLLAMA_HOST = "http://localhost:11434"
@@ -203,228 +203,93 @@ class QueryConverter:
 
     def _init_rag(self):
         # === RAG Setup (Embedding + Vector Store) ===
-        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.chroma_client = chromadb.Client()
-        self.collection = self.chroma_client.get_or_create_collection(name="db_schema")
+        try:
+            self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            self.chroma_client = chromadb.Client()
+            self.collection = self.chroma_client.get_or_create_collection(name="db_schema")
 
-        # Clear old data
-        existing = self.collection.get()
-        if existing and existing.get("ids"):
-            self.collection.delete(ids=existing["ids"])
+            # Clear existing data (optional, so we refresh every run)
+            try:
+                existing_ids = self.collection.get()["ids"]
+                if existing_ids:
+                    self.collection.delete(ids=existing_ids)
+            except Exception:
+                pass
 
-        docs, ids, metadatas = [], [], []
+            # Prepare schema text for embeddings
+            docs = []
+            ids = []
+            for table, columns in self.schema.items():
+                content = f"Table: {table} | Columns: {', '.join(columns)}"
+                docs.append(content)
+                ids.append(table)
 
-        for table, columns in self.schema.items():
-            docs.append(f"{table} {' '.join(columns)}")
-            ids.append(table)
-            metadatas.append({
-            "table": str(table),
-            "columns": json.dumps(columns) # <<--- FIXED
-            })
-
-        embeddings = self.embedding_model.encode(docs).tolist()
-        self.collection.add(
-            documents=docs,
-            embeddings=embeddings,
-            ids=ids,
-            metadatas=metadatas
-        )
-
-        print(f"[RAG] Stored {len(docs)} tables into Chroma vector store.")
+            embeddings = self.embedding_model.encode(docs).tolist()
+            self.collection.add(documents=docs, embeddings=embeddings, ids=ids)
+            print(f"[RAG] Stored {len(docs)} tables into Chroma vector store.")
+        except Exception as e:
+            # Fail open: continue without RAG
+            print(f"Warning: RAG initialization failed: {e}")
+            self.embedding_model = None
+            self.chroma_client = None
+            self.collection = None
 
     def get_schema(self):
         """Get database schema information"""
         return self.db.get_schema()
 
+    def get_full_data(self):
+        """Fetch ALL rows from each table (only safe for small DBs)."""
+        full_data = {}
+        try:
+            for table in self.schema.keys():
+                try:
+                    self.db.execute(f"SELECT * FROM {table}")
+                    rows = self.db.fetchall()
+                    columns = [desc[0] for desc in self.db.cursor.description]
+                    full_rows = [dict(zip(columns, row)) for row in rows]
+                    full_data[table] = full_rows
+                except Exception as e:
+                    full_data[table] = [f"Error fetching data: {e}"]
+        except Exception as e:
+            print(f"Full data extraction failed: {e}")
+        return full_data
+
     
     def natural_language_to_sql(self, query):
         try:
-            # RAG Search: Get relevant schema chunks
-            rag_results = self.collection.query(
-            query_texts=[query],
-            n_results=6
-        )
+            # RAG Search: Get relevant schema chunks (if available)
+            retrieved_docs = None
+            if getattr(self, 'collection', None):
+                try:
+                    rag_results = self.collection.query(
+                        query_texts=[query],
+                        n_results=5
+                    )
+                    retrieved_docs = rag_results['documents'][0]
+                except Exception as e:
+                    print(f"Warning: RAG search failed: {e}")
 
-# Build a minimal schema dict from metadatas
-            relevant_schema = {}
-            if rag_results and rag_results.get("metadatas") and len(rag_results["metadatas"]) > 0:
-                for md in rag_results["metadatas"][0]:
-                    tbl = md.get("table")
-                    cols_raw = md.get("columns", "[]")
-                    try:
-                        cols = json.loads(cols_raw) if isinstance(cols_raw, str) else []
-                    except:
-                        cols = []
-                    if tbl and cols:
-                        relevant_schema[tbl] = cols
-
-# Fallback to full schema if RAG returned nothing
-            schema_info = json.dumps(relevant_schema if relevant_schema else self.schema, indent=2)
+            # Use only relevant parts of schema in the prompt
+            schema_info = json.dumps(self.schema, indent=2)
+            full_data = json.dumps(self.get_full_data(), indent=2)
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
 The target database type is **{self.db.db_type.upper()}** — you must only use syntax valid for this database type.
 
 You will receive:
-1. A database schema in JSON format (tables and columns exactly as in the DB)
+1. A database schema in JSON format (tables, columns and data exactly as in the DB)
 2. A user's natural language query
 
 
-Special Rule for NON-DATABASE queries:
-- If the query contains both a greeting and a valid database request, IGNORE the greeting entirely and generate SQL for the database request portion.
-    Example: "hey can you give me customer contact number?" → treat as "can you give me customer contact number".
-- You must never generate SQL for queries that are purely greetings, small talk, jokes, chit-chat, or unrelated to the database.
-- Examples of NON-DATABASE queries: "hello", "hi", "hey", "how are you", "good morning", "good evening", "what's up", "sup", "tell me a joke", "thank you", "who are you".
-- Only return `NO_SQL_QUERY` if the ENTIRE query is unrelated to the database schema or contains no retrievable database information.
-- Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
-- Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
+Schema:
+{schema_info}
 
-MANDATORY COLUMN SELECTION RULE (STRICT ENFORCEMENT):
+Full Data:
+{full_data}
 
-- If the user query requests data from a table but does not explicitly specify which columns to retrieve:
-    1. You MUST expand to ALL columns of that table using EXACTLY the names shown in the provided schema JSON.
-    2. You MUST list the columns in the same order as in the schema.
-    3. You MUST NOT use SELECT * under any circumstances.
-    4. You MUST NOT invent or guess new columns (e.g., CustStatus, CustCity, CustState, CustZip, ContactId).
-    5. You MUST NOT assume common CRM fields if they do not exist in the schema.
-    6. If the schema snippet is incomplete, ONLY use the columns that are visible in the snippet — never add extras.
-    7. If you are unsure about a column, omit it rather than guessing.
-    8. When joining tables, only include columns that actually exist in those tables’ schema.
-
-SCHEMA COMPLETENESS RULE (CRITICAL):
-
-- If the schema snippet for a table appears incomplete (missing some columns), you MUST NOT invent or guess additional columns.
-- In that case, you MUST only output the columns shown in the provided schema snippet.
-- If the user query requests "all data" and the schema snippet is incomplete, include only the visible columns.
-- Never assume common fields like CustStatus, CustCity, CustState, CustZip if they are not explicitly listed in the schema snippet.
-
-SPECIAL RULE FOR "UNIVERSAL NAME SEARCH":
-- If the user query is just a name (e.g., "sanjay patel"), without specifying branch/history/contact:
-   → Search across ALL tables in the schema.
-   → For every table:
-       1. Identify text-like columns (VARCHAR, TEXT, CHAR, NVARCHAR, etc.).
-       2. Generate a SELECT that returns all columns from that table where LOWER(column) = LOWER('<name>') OR LOWER(column) LIKE LOWER('%<name>%').
-       3. Add a column 'table_name' in the SELECT to show from which table the row came.
-   → Combine all these SELECTs with UNION ALL.
-
-SPECIAL RULE FOR "HISTORY" OR "DATA OF <NAME>" QUERIES:
-
-- If the user query contains the exact word "history" OR the phrase "data of <person name>":
-   → ALWAYS treat it as a full retrieval across ALL related tables, not just one table.
-   → Main table must be `customers`.
-   → LEFT JOIN with `address` ON customers.CustID = address.CustID
-   → LEFT JOIN with `custcontact` ON customers.CustID = custcontact.CustId
-   → SELECT all columns from all three tables, listed explicitly and in schema order.
-If the user query contains the exact word "history" OR the phrase "data of <person name>":
-   → ALWAYS retrieve FULL DATA across all related tables.
-   → Main table must be `customers` (aliased as m).
-   → LEFT JOIN with `address` (aliased as a) ON m.CustID = a.CustID.
-   → LEFT JOIN with `custcontact` (aliased as cc) ON m.CustID = cc.CustId.
-   → SELECT ALL columns from all three tables explicitly, in schema order:
-       SELECT m.*, a.*, cc.*
-   → WHERE clause must be: LOWER(m.CustName) = LOWER('<name>')
-
-SPECIAL RULE FOR "BRANCH" QUERIES:
-
-- - If the query mentions "branch of <name>", ALWAYS treat <name> as a customer name, not a branch name.
-    → Use customers as the main table (alias c).
-    → LEFT JOIN branch (alias b) ON c.CustBranchID = b.BranchID
-    → SELECT b.*
-    → WHERE LOWER(c.CustName) = LOWER('<customer name>').
-    → LEFT JOIN branch (alias b) ON c.CustBranchID = b.BranchID
-    → SELECT b.* 
-    → WHERE LOWER(c.CustName) = LOWER('<customer name>').
-- Never assume <name> is a branch unless the query explicitly says "branch name" or "branch called".
-
-- If the query mentions a branch directly by name:
-    → Use branch as the main table (alias b).
-    → SELECT b.* 
-    → WHERE LOWER(b.BranchName) = LOWER('<branch name>').
-    → If exact match returns no rows, fallback to:
-        WHERE LOWER(b.BranchName) LIKE LOWER('%<branch name>%').
-
-
-TABLE NAME ACCURACY RULE (HARD ENFORCEMENT):
-- You must use table names exactly as they appear in the provided schema.
-- Do NOT rename, shorten, abbreviate, pluralize, singularize, or otherwise modify table names in any way.
-- If you cannot find an exact table name match in the schema for a table you want to use, return NO_SQL_QUERY instead of guessing.
-
-SPECIAL RULE FOR "VENDOR" QUERIES (HARD ENFORCEMENT):
-- IMPORTANT: There is NO "vendors" table in the schema.
-- Vendors are represented by rows in the "customers" table with IsVendor = 'YES'.
-- If a query mentions "vendor" or "vendors":
-    - Always use the "customers" table with condition: customers.IsVendor = 'YES'
-    - Join with related tables (e.g., address, custcontact) using CustID where necessary.
-- NEVER create or reference a "vendors" table.
-- NEVER use VendorID — it does not exist in the schema.
-- If you cannot satisfy the vendor request with these rules, return exactly: NO_SQL_QUERY.
-
-LINKING COLUMN OUTPUT RULE:
-- Whenever joining two or more tables, always include at least one linking column from the join condition in the SELECT clause.
-- This linking column must be either from the main table or the joined table, whichever makes the relationship clearer.
-- If the join is on CustID → include CustID in the output.
-- If the join is on AddrID → include AddrID in the output.
-- If both exist, include both.
-- This ensures you can always trace which main record the joined data belongs to.
-
-SPECIAL RULE: ACTIVE / INACTIVE STATUS
-- If the schema contains a column named 'Inactive' (case-insensitive), you MUST use that column for all active/inactive filtering.
-- Do NOT use 'IsActive', 'Active', 'Status', or any other column name unless 'Inactive' does NOT exist in the schema.
-- 'Inactive' column meaning:
-    - 'on' → the customer is INACTIVE
-    - 'off' → the customer is ACTIVE
-- If user asks for ACTIVE customers → WHERE Inactive = 'off'
-- If user asks for INACTIVE customers → WHERE Inactive = 'on'
-- This mapping is MANDATORY if 'Inactive' exists in the schema.
-- If the query intent is active/inactive, you must first identify the main table from the schema, then check if 'Inactive' exists. 
-- Never invent a column name not in the schema. If unsure, pick the closest exact match from the schema.
-
-
-General Rules:
-- Only use table and column names from the schema provided.
-- If a column name in the user's query seems similar but is not in the schema, map it to the closest match from the schema without changing meaning.
-- Never invent new column names.
-- Use LEFT JOIN for matching ID/code columns across tables.
-- Always alias columns when there's a name conflict.
-- Output only the SQL query — no explanations, comments, or markdown.
-
-SPECIAL RULE FOR DATE FILTERING:
-- If the query contains any date, normalize it to the standard format YYYY-MM-DD before using in SQL.
-- Accept all common human date formats, including but not limited to:
-    - DD-MM-YYYY or D-M-YYYY
-    - MM-DD-YYYY or M-D-YYYY
-    - YYYY-MM-DD
-    - Month DD, YYYY (e.g., June 26, 2017)
-    - DD Month YYYY (e.g., 26 June 2017)
-    - Mon DD YYYY (e.g., Jun 26 2017)
-    - DD/Mon/YYYY or MM/DD/YYYY
-    - With or without leading zeros.
-- If the user specifies only a month (e.g., "in May"), convert the month name to its number (May = 5).
-- For MySQL/MariaDB, use MONTH(column) = <month_number> instead of LIKE.
-- If the year is also mentioned (e.g., "May 2020"), use both:
-    MONTH(column) = <month_number> AND YEAR(column) = <year>.
-- Always interpret dates in day-first order if the format is ambiguous and matches the schema’s locale.
-- For MySQL/MariaDB:
-    - For a single exact date, wrap the column in DATE():
-        DATE(column) = 'YYYY-MM-DD'
-    - For a month/year combo, use:
-        MONTH(column) = <month_number> AND YEAR(column) = <year>
-    - For a range, use:
-        column BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'
-- Never guess the column name — pick the correct one from the schema that relates to the query context.
-- If the user specifies a single date without a time, wrap the column in DATE():
-    DATE(column) = 'YYYY-MM-DD'
-- This ensures a match even if the column contains a datetime value.
-
-
-SCHEMA ACCURACY:
-- Use only table and column names exactly as they appear in the provided schema.
-- Never skip related tables — include EVERY table that shares the linking column with the main table.
-
-VALUE MATCHING STRATEGY (SMART FUZZY FALLBACK):
-- First, attempt an exact match using `=`.
-- If the exact match returns no rows, automatically fallback to case-insensitive substring match using `LOWER(column) LIKE LOWER('%value%')`.
-- Only apply `LIKE` when necessary to account for typos or case mismatches.
-
+User Request:
+{query}
 
 Relevant Schema (retrieved via semantic search):
 {schema_info}
@@ -458,7 +323,7 @@ Output:
             sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
 
            
-    #     # Validate
+         # Validate
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
                 print(f" Invalid SQL returned: {sql_query}")
                 return None
@@ -469,8 +334,6 @@ Output:
         except Exception as e:
             print(f" Model error: {str(e)}")
             return None
-
-
 
     def format_value(self, value, data_type):
         """Format value based on its data type"""
