@@ -173,6 +173,7 @@ class DatabaseConnection:
         except Exception as e:
             print(f"Error getting schema: {str(e)}")
             raise
+
         
 class QueryConverter:       
     def __init__(self, db_type, db_config):
@@ -185,7 +186,20 @@ class QueryConverter:
             raise Exception(f"Database connection failed: {str(e)}")
         
         if self.schema:
-            self._init_rag()        
+            self._init_rag()
+
+    def _safe_metadata(self, value):
+        """Convert any Python object into a ChromaDB-safe metadata value."""
+        import json
+        from datetime import datetime
+        from decimal import Decimal
+
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, (datetime, Decimal)):
+            return str(value)
+        # Lists, dicts, sets, tuples → JSON string
+        return json.dumps(value, default=str)
 
     def _init_rag(self):
         # === RAG Setup (Embedding + Vector Store) ===
