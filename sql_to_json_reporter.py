@@ -38,6 +38,11 @@ class CustomJSONEncoder(json.JSONEncoder):
             return float(obj)
         if isinstance(obj, datetime):
             return obj.isoformat()
+        if isinstance(obj, bytes):
+            try:
+                return obj.decode("utf-8", errors="ignore")
+            except:
+                return str(obj)
         return super().default(obj)
 
 class DatabaseConnection:
@@ -239,7 +244,7 @@ class QueryConverter:
         return self.db.get_schema()
 
     def get_full_data(self):
-        """Fetch ALL rows from each table (only safe for small DBs)."""
+        """Fetch ALL rows from each table."""
         full_data = {}
         try:
             for table in self.schema.keys():
@@ -272,21 +277,26 @@ class QueryConverter:
 
             # Use only relevant parts of schema in the prompt
             schema_info = json.dumps(self.schema, indent=2)
-            full_data = json.dumps(self.get_full_data(), indent=2)
+            # full_data = json.dumps(self.get_full_data(), indent=2, cls=CustomJSONEncoder)
             prompt = f"""
 You are an expert SQL query generator for **any database** (MySQL, PostgreSQL, SQLite, MSSQL).
 The target database type is **{self.db.db_type.upper()}** — you must only use syntax valid for this database type.
 
 You will receive:
-1. A database schema in JSON format (tables, columns and data exactly as in the DB)
+1. A database schema in JSON format (tables and columns exactly as in the DB)
 2. A user's natural language query
 
+Rules:  
 
+Special Rule for NON-DATABASE queries:
+- If the query contains both a greeting and a valid database request, IGNORE the greeting entirely and generate SQL for the database request portion.
+- You must never generate SQL for queries that are purely greetings, small talk, jokes, chit-chat, or unrelated to the database.
+- Examples of NON-DATABASE queries: "hello", "hi", "hey", "how are you", "good morning", "good evening", "what's up", "sup", "tell me a joke", "thank you", "who are you".
+- Only return `NO_SQL_QUERY` if the ENTIRE query is unrelated to the database schema or contains no retrievable database information.
+- Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
+- Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
 Schema:
 {schema_info}
-
-Full Data:
-{full_data}
 
 User Request:
 {query}
@@ -294,7 +304,7 @@ User Request:
 Relevant Schema (retrieved via semantic search):
 {schema_info}
 
-Only use these tables and columns. If something is missing here, assume it does not exist in the database.
+Only use these tables, columns and data. If something is missing here, assume it does not exist in the database.
 User Query:
 {query}
 
@@ -321,7 +331,6 @@ Output:
 
         # Cleanup unwanted formatting
             sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
-
            
          # Validate
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
@@ -402,13 +411,13 @@ Output:
             else:
                 table_name = self.get_table_name(sql_query)
                 filename_prefix = f"{table_name}_results"
-            
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{filename_prefix}_{timestamp}.json"
-        
+
         with open(filename, 'w') as f:
             json.dump(data, f, indent=2, cls=CustomJSONEncoder)
-        return filename 
+        return filename
 
     def process_query(self, natural_language_query):
         """Fully model-based: converts NL to SQL using Ollama + executes + saves result."""
