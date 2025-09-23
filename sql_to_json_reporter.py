@@ -178,7 +178,6 @@ class DatabaseConnection:
         except Exception as e:
             print(f"Error getting schema: {str(e)}")
             raise
-
         
 class QueryConverter:       
     def __init__(self, db_type, db_config):
@@ -195,10 +194,6 @@ class QueryConverter:
 
     def _safe_metadata(self, value):
         """Convert any Python object into a ChromaDB-safe metadata value."""
-        import json
-        from datetime import datetime
-        from decimal import Decimal
-
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
         if isinstance(value, (datetime, Decimal)):
@@ -243,26 +238,9 @@ class QueryConverter:
         """Get database schema information"""
         return self.db.get_schema()
 
-    def get_full_data(self):
-        """Fetch ALL rows from each table."""
-        full_data = {}
-        try:
-            for table in self.schema.keys():
-                try:
-                    self.db.execute(f"SELECT * FROM {table}")
-                    rows = self.db.fetchall()
-                    columns = [desc[0] for desc in self.db.cursor.description]
-                    full_rows = [dict(zip(columns, row)) for row in rows]
-                    full_data[table] = full_rows
-                except Exception as e:
-                    full_data[table] = [f"Error fetching data: {e}"]
-        except Exception as e:
-            print(f"Full data extraction failed: {e}")
-        return full_data
-
     
     def natural_language_to_sql(self, query):
-        try:
+        try:            
             # RAG Search: Get relevant schema chunks (if available)
             retrieved_docs = None
             if getattr(self, 'collection', None):
@@ -283,29 +261,43 @@ You are an expert SQL query generator.
 Your task is to translate natural language questions into **valid, efficient, and accurate SQL queries**.  
 
 Context:  
-- You will be provided with the **database schema** (tables, columns, relationships, constraints).  
+- You will be provided with the **database schema** (tables, columns).  
 - You may also receive **retrieved documents** or metadata from a Retrieval-Augmented Generation (RAG) system to improve accuracy.  
 - Always ground your SQL generation in the schema and context provided.  
 
 Instructions:  
-1. Carefully analyze the schema and understand table relationships.  
-2. Generate only **SQL queries**  do not add explanations, apologies, or extra text unless explicitly asked.  
-3. Use **JOINs, GROUP BY, ORDER BY, LIMIT, aggregates** when necessary.  
-4. If multiple interpretations are possible, choose the **most likely** one based on schema and context.  
-5. If the query is ambiguous, **assume the most standard intent** (e.g., "top customers" → order by revenue/amount descending).  
-6. Optimize queries for **readability and efficiency**. Use aliases where useful.  
-7. Always return complete SQL syntax that can be executed directly.  
-8. Do not hallucinate columns or tables. Only use what is given in schema/context.  
-9. If filtering by natural language dates ("last month", "yesterday"), convert them into correct SQL date functions.  
-10. Output format: **only SQL code block**.
+1. Carefully analyze the schema and understand table relationships.
+ - Never compare an integer column to a string literal.  
+ - If the user input looks like a name (e.g., "sanjay patel") but the schema has `"userId"` as an integer, search instead in a text column. such as `"name"`, `"fullName"`..    
+2. Generate only **SQL queries** – do not add explanations, apologies, or extra text unless explicitly asked.  
+3. Use **JOINs, GROUP BY, ORDER BY, LIMIT, aggregates** when necessary.
+   - When filtering by a name or other text attribute, and the main table only has a userId/foreign key:  
+   - **Automatically JOIN** the table containing user or name information.  
+   - Example: If "Crews" has "userId" and "Users" has "fullName", join Crews → Users using "Crews.userId = Users.id". 
+4. Always enclose both table names and column names in double quotes, exactly as they appear in the schema. Never generate unquoted identifiers.
+5. Always use **exact table names and column names exactly as shown in the schema (including quotes and case)**.  
+6. Use **single quotes `' '` for string literals/values**, and **double quotes `"` only for identifiers** (tables, columns).  
+7. Do not invent or change table names.  
+8. If multiple interpretations are possible, choose the **most likely** one based on schema and context.  
+9. If the query is ambiguous, **assume the most standard intent** (e.g., "top customers" → order by revenue/amount descending).  
+10. Optimize queries for **readability and efficiency**. Use aliases where useful.  
+11. Always return complete SQL syntax that can be executed directly.  
+12. Do not hallucinate columns or tables. Only use what is given in schema/context.  
+13. If filtering by natural language dates ("last month", "yesterday"), convert them into correct SQL date functions.  
+14. Output format: **only SQL code block**.
+
+Important:
+- Only use table and column names that appear exactly in the provided schema.
+- Do not invent or pluralize names (e.g., use "User" if schema shows "User", not "Users").
 
 Special Rule for NON-DATABASE queries:
 - If the query contains both a greeting and a valid database request, IGNORE the greeting entirely and generate SQL for the database request portion.
 - You must never generate SQL for queries that are purely greetings, small talk, jokes, chit-chat, or unrelated to the database.
-- Examples of NON-DATABASE queries: "hello", "hi", "hey", "how are you", "good morning", "good evening", "what's up", "sup", "tell me a joke", "thank you", "who are you"and other abuses.
+- Examples of NON-DATABASE queries: "hello", "hi", "hey", "how are you", "good morning", "good evening", "what's up", "sup", "tell me a joke", "thank you", "who are you" and other abuses.
 - Only return `NO_SQL_QUERY` if the ENTIRE query is unrelated to the database schema or contains no retrievable database information.
 - Never classify a query as NON-DATABASE if any part of it contains a valid database-related request.
 - Do not output any explanations or extra text — output only the SQL query or `NO_SQL_QUERY`.
+
 Schema:
 {schema_info}
 
@@ -339,6 +331,13 @@ Output:
                 sql_query,
                 flags=re.IGNORECASE
             )
+            if self.db.db_type == "postgresql":
+                sql_query = re.sub(r'FROM\s+([A-Za-z_][\w]*)',
+                                   r'FROM "\1"', sql_query, flags=re.IGNORECASE)
+                for table, cols in self.schema.items():
+                    for col in cols:
+                        pattern = r'(?<!")\b' + re.escape(col) + r'\b(?!")'
+                        sql_query = re.sub(pattern, f'"{col}"', sql_query)
 
         # Cleanup unwanted formatting
             sql_query = re.sub(r"```sql|```|/\*|\*/", "", sql_query).strip()
@@ -347,7 +346,6 @@ Output:
             if not sql_query.lower().startswith("select") or "from" not in sql_query.lower():
                 print(f" Invalid SQL returned: {sql_query}")
                 return None
-
             print(f"Cleaned SQL: {sql_query}")
             return sql_query
 
@@ -374,7 +372,7 @@ Output:
             from_index = query.find('from')
             if from_index != -1:
                 after_from = query[from_index + 4:].strip()
-                table_name = after_from.split()[0].strip('`"[]')
+                table_name = after_from.split()[0].strip('`"[];')
                 return table_name
             return "query"
         except:
@@ -415,18 +413,21 @@ Output:
             return {"error": error_msg}
 
     def save_to_json(self, data, sql_query, filename_prefix=None):
-        """Save results to JSON file"""
+        def safe_filename(name: str) -> str:
+        # replace everything except letters, numbers, dash and underscore
+            return re.sub(r'[^A-Za-z0-9_-]', '_', name)
         if filename_prefix is None:
             if "UNION ALL" in sql_query and "user_id" in sql_query:
                 filename_prefix = "user_references"
             else:
                 table_name = self.get_table_name(sql_query)
                 filename_prefix = f"{table_name}_results"
+        filename_prefix = safe_filename(filename_prefix)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{filename_prefix}_{timestamp}.json"
 
-        with open(filename, 'w') as f:
+        with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, cls=CustomJSONEncoder)
         return filename
 
