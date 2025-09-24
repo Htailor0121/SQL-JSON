@@ -208,7 +208,7 @@ class QueryConverter:
             self.chroma_client = chromadb.Client()
             self.collection = self.chroma_client.get_or_create_collection(name="db_schema")
 
-            # Clear existing data (optional, so we refresh every run)
+            # Clear existing data
             try:
                 existing_ids = self.collection.get()["ids"]
                 if existing_ids:
@@ -216,23 +216,32 @@ class QueryConverter:
             except Exception:
                 pass
 
-            # Prepare schema text for embeddings
             docs = []
             ids = []
+            metadatas = []
+
             for table, columns in self.schema.items():
-                content = f"Table: {table} | Columns: {', '.join(columns)}"
-                docs.append(content)
-                ids.append(table)
+                # Store table
+                docs.append(f"Table: {table}")
+                ids.append(f"table_{table}")
+                metadatas.append({"type": "table", "table": table})
+
+                # Store columns individually
+                for col in columns:
+                    docs.append(f"Table: {table} | Column: {col}")
+                    ids.append(f"column_{table}_{col}")
+                    metadatas.append({"type": "column", "table": table, "column": col})
 
             embeddings = self.embedding_model.encode(docs).tolist()
-            self.collection.add(documents=docs, embeddings=embeddings, ids=ids)
-            print(f"[RAG] Stored {len(docs)} tables into Chroma vector store.")
+            self.collection.add(documents=docs, embeddings=embeddings, ids=ids, metadatas=metadatas)
+            print(f"[RAG] Stored {len(docs)} tables + columns into Chroma vector store.")
+
         except Exception as e:
-            # Fail open: continue without RAG
             print(f"Warning: RAG initialization failed: {e}")
             self.embedding_model = None
             self.chroma_client = None
             self.collection = None
+
 
     def get_schema(self):
         """Get database schema information"""
@@ -269,11 +278,12 @@ Instructions:
 1. Carefully analyze the schema and understand table relationships.
  - Never compare an integer column to a string literal.  
  - If the user input looks like a name (e.g., "sanjay patel") but the schema has `"userId"` as an integer, search instead in a text column. such as `"name"`, `"fullName"`..    
-2. Generate only **SQL queries** – do not add explanations, apologies, or extra text unless explicitly asked.  
+2. Generate only **SQL queries** , do not add explanations, apologies, or extra text unless explicitly asked.  
 3. Use **JOINs, GROUP BY, ORDER BY, LIMIT, aggregates** when necessary.
    - When filtering by a name or other text attribute, and the main table only has a userId/foreign key:  
-   - **Automatically JOIN** the table containing user or name information.  
-   - Example: If "Crews" has "userId" and "Users" has "fullName", join Crews → Users using "Crews.userId = Users.id". 
+   - **Automatically JOIN** the table containing user or name information.
+   -  Always enclose both table names and column names in double quotes, exactly as they appear in the schema.
+   - If the user query mentions "full address" or "all columns" for a table, **select all columns of that table** instead of just one. 
 4. Always enclose both table names and column names in double quotes, exactly as they appear in the schema. Never generate unquoted identifiers.
 5. Always use **exact table names and column names exactly as shown in the schema (including quotes and case)**.  
 6. Use **single quotes `' '` for string literals/values**, and **double quotes `"` only for identifiers** (tables, columns).  
@@ -289,6 +299,15 @@ Instructions:
 Important:
 - Only use table and column names that appear exactly in the provided schema.
 - Do not invent or pluralize names (e.g., use "User" if schema shows "User", not "Users").
+- By default, select **all columns** from the main table.
+- Only select specific columns if the user explicitly mentions them.
+- Always use exact table and column names from the schema, enclosed in double quotes.
+
+Instructions for PostgreSQL:
+- Always use PostgreSQL syntax.
+- When filtering by year, use: EXTRACT(YEAR FROM "column") = 2024
+- Never use strftime or other SQLite functions.
+- Always return SQL with double quotes for identifiers and numeric literals for years.
 
 Special Rule for NON-DATABASE queries:
 - If the query contains both a greeting and a valid database request, IGNORE the greeting entirely and generate SQL for the database request portion.
@@ -324,6 +343,24 @@ Output:
                 system="You are a SQL generator. Return only the SQL query."
             )
             sql_query = response.get("response", "").strip()
+            main_table = self.get_table_name(sql_query)
+            if main_table in self.schema:
+                all_cols = ', '.join([f'"{col}"' for col in self.schema[main_table]])
+            
+                select_match = re.search(r'SELECT\s+(.*?)\s+FROM', sql_query, re.IGNORECASE)
+                if select_match:
+                    selected_cols = select_match.group(1).strip()
+                    # Replace if Ollama selected only 1 column or *
+                    if selected_cols == '*' or len(selected_cols.split(',')) == 1:
+                        sql_query = f'SELECT {all_cols} FROM "{main_table}"'
+                        
+            sql_query = sql_query.replace('\\"', '"').replace("\\'", "'")    
+            sql_query = re.sub(
+                r"EXTRACT\(YEAR FROM \"([^\"]+)\"::timestamp\)\s*=\s*'(\d+)'",
+                r"EXTRACT(YEAR FROM \"\1\"::timestamp) = \2",
+                sql_query,
+                flags=re.IGNORECASE
+                )
             if self.db.db_type == "mysql":
                 sql_query = re.sub(
                 r"CAST\s*\(\s*SUBSTR\s*\(\s*(\w+),\s*1,\s*4\s*\)\s*AS\s*INT\s*\)\s*=\s*(\d{4})",
@@ -332,8 +369,19 @@ Output:
                 flags=re.IGNORECASE
             )
             if self.db.db_type == "postgresql":
-                sql_query = re.sub(r'FROM\s+([A-Za-z_][\w]*)',
-                                   r'FROM "\1"', sql_query, flags=re.IGNORECASE)
+                sql_query = re.sub(
+                    r'\bFROM\s+([A-Za-z_][\w]*)',
+                    lambda m: f'FROM "{m.group(1)}"',
+                    sql_query,
+                    flags=re.IGNORECASE
+                )
+                sql_query = re.sub(
+                    r'\bJOIN\s+([A-Za-z_][\w]*)',
+                    lambda m: f'JOIN "{m.group(1)}"',
+                    sql_query,
+                    flags=re.IGNORECASE
+                )
+
                 for table, cols in self.schema.items():
                     for col in cols:
                         pattern = r'(?<!")\b' + re.escape(col) + r'\b(?!")'
