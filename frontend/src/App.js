@@ -3,7 +3,8 @@ import axios from 'axios';
 import './App.css';
 
 // Point to backend automatically based on current host
-const API_URL = "https://sql-json.onrender.com";
+const API_URL = (process.env.REACT_APP_API_URL)
+  || `${window.location.protocol}//${window.location.hostname}:8000`;
 
 const DEFAULTS = {
   db_type: 'mysql',
